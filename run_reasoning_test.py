@@ -180,7 +180,7 @@ def main() -> None:
     # Create initial state with multi-step goal
     print("2. Creating initial state with multi-step goal...")
     initial_state = State()
-    initial_state.data['goal'] = "Создай файл hello.txt с текстом 'Hello ONIKS!', а затем выведи его содержимое в консоль."
+    initial_state.data['goal'] = "Create a file named 'hello.txt' with the content 'Hello ONIKS!', then display its content to the console."
     initial_state.data['task_completed'] = False
     initial_state.add_message("Demo started with multi-step file creation and display goal")
     

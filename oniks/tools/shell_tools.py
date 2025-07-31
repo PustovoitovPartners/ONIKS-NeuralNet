@@ -54,7 +54,7 @@ class ExecuteBashCommandTool(Tool):
         super().__init__()
         self.name = "execute_bash_command"
         self.description = (
-            "Выполняет shell-команду и возвращает ее stdout, stderr и код завершения. "
+            "Executes shell command and returns its stdout, stderr and exit code. "
             "Arguments: {'command': 'str', 'timeout': 'Optional[int]'}"
         )
     

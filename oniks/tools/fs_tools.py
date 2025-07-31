@@ -272,8 +272,8 @@ class WriteFileTool(Tool):
         super().__init__()
         self.name = "write_file"
         self.description = (
-            "Записывает или перезаписывает контент в указанный файл. Создает файл, если он не существует. "
-            "Аргументы: {'file_path': 'str', 'content': 'str'}"
+            "Writes or overwrites content to the specified file. Creates file if it doesn't exist. "
+            "Arguments: {'file_path': 'str', 'content': 'str'}"
         )
     
     def execute(self, **kwargs: Any) -> str:

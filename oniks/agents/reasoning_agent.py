@@ -161,60 +161,60 @@ class ReasoningAgent(BaseAgent):
             Formatted prompt string optimized for weak LLMs with clear sections.
         """
         # Build the tools list section
-        tools_section = "--- ДОСТУПНЫЕ ИНСТРУМЕНТЫ ---\n"
+        tools_section = "--- AVAILABLE TOOLS ---\n"
         
         if not self.tools:
-            tools_section += "Инструменты недоступны.\n"
+            tools_section += "No tools available.\n"
         else:
             for tool in self.tools:
-                description = getattr(tool, 'description', None) or "[Описание не предоставлено]"
+                description = getattr(tool, 'description', None) or "[Description not provided]"
                 tools_section += f"- {tool.name}: {description}\n"
         
         # Build examples section with clear dividers
-        examples_section = """--- ПРИМЕРЫ ПРАВИЛЬНОГО ФОРМАТА ---
+        examples_section = """--- CORRECT FORMAT EXAMPLES ---
 
-Пример 1 (Чтение файла):
-Цель: Read the contents of file task.txt
+Example 1 (File Reading):
+Goal: Read the contents of file task.txt
 Tool: read_file
 Arguments: {"file_path": "task.txt"}
-Reasoning: Цель требует прочитать файл, поэтому инструмент read_file подходит лучше всего.
+Reasoning: Goal requires reading a file, so the read_file tool is most suitable.
 
-Пример 2 (Обработка данных):
-Цель: Process data from input.json and save results
+Example 2 (Data Processing):
+Goal: Process data from input.json and save results
 Tool: process_data
 Arguments: {"input_file": "input.json", "output_format": "json"}
-Reasoning: Нужна обработка данных, поэтому используем process_data с входным файлом.
+Reasoning: Data processing is needed, so we use process_data with the input file.
 
-Пример 3 (Вычисления):
-Цель: Calculate the sum of numbers
+Example 3 (Calculations):
+Goal: Calculate the sum of numbers
 Tool: calculate
 Arguments: {"operation": "sum", "values": [1, 2, 3, 4, 5]}
-Reasoning: Требуется математическое вычисление, используем инструмент calculate.
+Reasoning: Mathematical calculation is required, using the calculate tool.
 
---- ПРАВИЛА ФОРМАТИРОВАНИЯ ---
-- Имя инструмента должно быть в строке, начинающейся с "Tool:"
-- Аргументы должны быть в строке, начинающейся с "Arguments:" с валидным JSON
-- Используй двойные кавычки в JSON, не одинарные
-- JSON должен быть правильно отформатирован
-- Включи все обязательные параметры для выбранного инструмента"""
+--- FORMATTING RULES ---
+- Tool name must be on a line starting with "Tool:"
+- Arguments must be on a line starting with "Arguments:" with valid JSON
+- Use double quotes in JSON, not single quotes
+- JSON must be properly formatted
+- Include all required parameters for the selected tool"""
         
         # Construct the complete prompt with clear sections
-        prompt = f"""--- АНАЛИЗ ЦЕЛИ И ВЫБОР ИНСТРУМЕНТА ---
+        prompt = f"""--- GOAL ANALYSIS AND TOOL SELECTION ---
 
---- ТЕКУЩАЯ ЦЕЛЬ ---
+--- CURRENT GOAL ---
 {goal}
 
 {tools_section}
 
 {examples_section}
 
---- ВОПРОС ---
-Какой инструмент должен быть использован и с какими аргументами для достижения цели?
+--- QUESTION ---
+Which tool should be used and with what arguments to achieve the goal?
 
---- ИНСТРУКЦИЯ ---
-Твой ответ ДОЛЖЕН содержать ТОЛЬКО секции "Tool", "Arguments" и "Reasoning".
-НЕ ДОБАВЛЯЙ никаких других рассуждений, вопросов или комментариев.
-Следуй формату из примеров."""
+--- INSTRUCTION ---
+Your response MUST contain ONLY the "Tool", "Arguments" and "Reasoning" sections.
+DO NOT ADD any other reasoning, questions or comments.
+Follow the format from the examples."""
         
         return prompt
     
@@ -550,8 +550,8 @@ Reasoning: Требуется математическое вычисление,
         """
         goal = state.data.get('goal', '')
         
-        # Check if goal contains 'выведи' (display)
-        if 'выведи' in goal.lower():
+        # Check if goal contains 'display'
+        if 'display' in goal.lower():
             # Check if execute_bash_command has been executed and contains 'Hello ONIKS!'
             if state.tool_outputs:
                 bash_output = state.tool_outputs.get('execute_bash_command', '')
@@ -585,7 +585,7 @@ Reasoning: Требуется математическое вычисление,
         goal_lower = goal.lower()
         
         # Check if this is the multi-step demo goal
-        if ("создай файл hello.txt" in goal_lower and "hello oniks" in goal_lower and "выведи" in goal_lower):
+        if ("create" in goal_lower and "hello.txt" in goal_lower and "hello oniks" in goal_lower and "display" in goal_lower):
             # Check if file has been created yet
             if not state.tool_outputs.get('write_file'):
                 # Step 1: Create the file
@@ -615,8 +615,7 @@ Reasoning: Требуется математическое вычисление,
                 )
         
         # Legacy support for simple file reading tasks
-        elif (("read" in goal_lower and "file" in goal_lower) or 
-              ("прочитать" in goal_lower and "файл" in goal_lower)):
+        elif ("read" in goal_lower and "file" in goal_lower):
             state.data['next_tool'] = 'read_file'
             state.data['tool_args'] = {'file_path': 'task.txt'}
             # Also set the file_path directly in state.data for ToolNode to use
