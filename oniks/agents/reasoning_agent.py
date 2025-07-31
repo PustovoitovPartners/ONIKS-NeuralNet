@@ -148,76 +148,73 @@ class ReasoningAgent(BaseAgent):
         return result_state
     
     def _generate_llm_prompt(self, goal: str) -> str:
-        """Generate a structured prompt for LLM integration with one-shot examples.
+        """Generate an optimized structured prompt for weak LLM models.
         
-        Creates a comprehensive prompt that includes the goal, available tools,
-        clear examples of proper response formatting, and a specific question
-        for the LLM to answer about tool selection.
+        Creates a comprehensive prompt with clear section dividers and instruction
+        at the end to leverage recency bias. Optimized for tinyllama and other
+        small models while maintaining tool selection functionality.
         
         Args:
             goal: The high-level goal extracted from the state.
             
         Returns:
-            Formatted prompt string ready for LLM integration with examples.
+            Formatted prompt string optimized for weak LLMs with clear sections.
         """
         # Build the tools list section
-        tools_section = "Available tools:\n"
+        tools_section = "--- ДОСТУПНЫЕ ИНСТРУМЕНТЫ ---\n"
         
         if not self.tools:
-            tools_section += "No tools available.\n"
+            tools_section += "Инструменты недоступны.\n"
         else:
             for tool in self.tools:
-                description = getattr(tool, 'description', None) or "[No description provided]"
+                description = getattr(tool, 'description', None) or "[Описание не предоставлено]"
                 tools_section += f"- {tool.name}: {description}\n"
         
-        # Build examples section with one-shot examples
-        examples_section = """Examples of proper response format:
+        # Build examples section with clear dividers
+        examples_section = """--- ПРИМЕРЫ ПРАВИЛЬНОГО ФОРМАТА ---
 
-Example 1 (File reading task):
-Goal: Read the contents of file task.txt
+Пример 1 (Чтение файла):
+Цель: Read the contents of file task.txt
 Tool: read_file
 Arguments: {"file_path": "task.txt"}
-Reasoning: The goal explicitly asks to read a file, so the read_file tool is most appropriate with the file path as the argument.
+Reasoning: Цель требует прочитать файл, поэтому инструмент read_file подходит лучше всего.
 
-Example 2 (Data processing task):
-Goal: Process data from input.json and save results
+Пример 2 (Обработка данных):
+Цель: Process data from input.json and save results
 Tool: process_data
 Arguments: {"input_file": "input.json", "output_format": "json"}
-Reasoning: This goal requires data processing, so the process_data tool should be used with proper input file specification.
+Reasoning: Нужна обработка данных, поэтому используем process_data с входным файлом.
 
-Example 3 (Simple value task):
-Goal: Calculate the sum of numbers
+Пример 3 (Вычисления):
+Цель: Calculate the sum of numbers
 Tool: calculate
 Arguments: {"operation": "sum", "values": [1, 2, 3, 4, 5]}
-Reasoning: Mathematical calculation is needed, so the calculate tool with sum operation is appropriate.
+Reasoning: Требуется математическое вычисление, используем инструмент calculate.
 
-IMPORTANT FORMATTING RULES:
-- Tool name must be on a line starting with "Tool:"
-- Arguments must be on a line starting with "Arguments:" followed by valid JSON
-- Use double quotes in JSON, not single quotes
-- Ensure JSON is properly formatted and parseable
-- Include all required parameters for the selected tool"""
+--- ПРАВИЛА ФОРМАТИРОВАНИЯ ---
+- Имя инструмента должно быть в строке, начинающейся с "Tool:"
+- Аргументы должны быть в строке, начинающейся с "Arguments:" с валидным JSON
+- Используй двойные кавычки в JSON, не одинарные
+- JSON должен быть правильно отформатирован
+- Включи все обязательные параметры для выбранного инструмента"""
         
-        # Construct the complete prompt
-        prompt = f"""Goal Analysis and Tool Selection
+        # Construct the complete prompt with clear sections
+        prompt = f"""--- АНАЛИЗ ЦЕЛИ И ВЫБОР ИНСТРУМЕНТА ---
 
-Current Goal: {goal}
+--- ТЕКУЩАЯ ЦЕЛЬ ---
+{goal}
 
 {tools_section}
 
 {examples_section}
 
-Question: Which tool should be used next and with what arguments to achieve the goal?
+--- ВОПРОС ---
+Какой инструмент должен быть использован и с какими аргументами для достижения цели?
 
-Please provide your reasoning and specify:
-1. The tool name to use
-2. The arguments required for the tool (as valid JSON)
-3. Why this tool is appropriate for the current goal
-
-Response format (follow the examples above exactly):
-Tool: [tool_name]
-Arguments: [tool_arguments]
-Reasoning: [explanation]"""
+--- ИНСТРУКЦИЯ ---
+Твой ответ ДОЛЖЕН содержать ТОЛЬКО секции "Tool", "Arguments" и "Reasoning".
+НЕ ДОБАВЛЯЙ никаких других рассуждений, вопросов или комментариев.
+Следуй формату из примеров."""
         
         return prompt
     
