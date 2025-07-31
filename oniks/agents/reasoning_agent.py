@@ -151,7 +151,7 @@ class ReasoningAgent(BaseAgent):
         """Generate an optimized structured prompt for weak LLM models.
         
         Creates a comprehensive prompt with clear section dividers and instruction
-        at the end to leverage recency bias. Optimized for tinyllama and other
+        at the end to leverage recency bias. Optimized for llama3:8b and other
         small models while maintaining tool selection functionality.
         
         Args:

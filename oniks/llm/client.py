@@ -32,7 +32,7 @@ class OllamaClient:
     
     Example:
         >>> client = OllamaClient()
-        >>> response = client.invoke("What is the capital of France?", model="tinyllama")
+        >>> response = client.invoke("What is the capital of France?", model="llama3:8b")
         >>> print(response)
         The capital of France is Paris.
     """
@@ -48,7 +48,7 @@ class OllamaClient:
         self.timeout = timeout
         self._client = ollama.Client(host=host)
     
-    def invoke(self, prompt: str, model: str = "tinyllama") -> str:
+    def invoke(self, prompt: str, model: str = "llama3:8b") -> str:
         """Send a prompt to the Ollama service and return the response.
         
         This method sends a text prompt to the specified model running on
@@ -56,7 +56,7 @@ class OllamaClient:
         
         Args:
             prompt: The text prompt to send to the model.
-            model: The name of the model to use (default: "tinyllama").
+            model: The name of the model to use (default: "llama3:8b").
             
         Returns:
             The text response from the model.
@@ -118,7 +118,7 @@ class OllamaClient:
                 f"Unexpected error communicating with Ollama service: {e}"
             ) from e
     
-    def check_model_availability(self, model: str = "tinyllama") -> bool:
+    def check_model_availability(self, model: str = "llama3:8b") -> bool:
         """Check if a specific model is available on the Ollama service.
         
         Args:

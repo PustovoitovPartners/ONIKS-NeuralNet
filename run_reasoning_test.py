@@ -205,14 +205,14 @@ def main() -> None:
         llm_client = OllamaClient()
         # Check if the default model is available
         if llm_client.check_model_availability():
-            print("   LLM client created successfully with model 'tinyllama'")
+            print("   LLM client created successfully with model 'llama3:8b'")
         else:
-            print("   Warning: Model 'tinyllama' not found, but client created")
+            print("   Warning: Model 'llama3:8b' not found, but client created")
             print("   Available models:", llm_client.list_available_models())
     except OllamaConnectionError as e:
         print(f"   Warning: {e}")
         print("   Note: Ensure Ollama is running locally with 'ollama serve'")
-        print("   And that you have pulled the tinyllama model with 'ollama pull tinyllama'")
+        print("   And that you have pulled the llama3:8b model with 'ollama pull llama3:8b'")
         llm_client = OllamaClient()  # Create client anyway for demonstration
     
     # Create agents and nodes
