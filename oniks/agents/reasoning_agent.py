@@ -125,12 +125,16 @@ class ReasoningAgent(BaseAgent):
         
         # Invoke LLM to get reasoning results
         try:
-            llm_response = self.llm_client.invoke(generated_prompt)
-            result_state.data['llm_response'] = llm_response
+            raw_llm_response = self.llm_client.invoke(generated_prompt)
+            result_state.data['llm_response'] = raw_llm_response
             result_state.add_message("Successfully received response from LLM")
             
-            # Parse LLM response to extract tool and arguments
-            self._parse_llm_response(llm_response, result_state)
+            # Sanitize the raw LLM response before parsing
+            sanitized_response = self._sanitize_llm_response(raw_llm_response)
+            result_state.add_message("Applied sanitization to LLM response")
+            
+            # Parse the sanitized LLM response to extract tool and arguments
+            self._parse_llm_response(sanitized_response, result_state)
             
         except Exception as e:
             logger.error(f"Error during LLM invocation: {e}")
@@ -217,6 +221,93 @@ DO NOT ADD any other reasoning, questions or comments.
 Follow the format from the examples."""
         
         return prompt
+    
+    def _sanitize_llm_response(self, raw_response: str) -> str:
+        """Sanitize raw LLM response before parsing to improve reliability.
+        
+        This method performs coarse cleaning operations to make the LLM response
+        more suitable for parsing:
+        1. Removes popular Markdown symbols (*, _, #) from the entire response
+        2. Strips leading and trailing whitespace from each line
+        3. Fixes common JSON errors like replacing single quotes with double quotes
+        
+        This "coarse cleaning filter" makes the system significantly more resilient
+        to noise and unpredictability from language models.
+        
+        Args:
+            raw_response: The raw response text from the LLM.
+            
+        Returns:
+            Sanitized response string ready for parsing.
+            
+        Example:
+            >>> agent = ReasoningAgent("test", [], llm_client)
+            >>> raw = "# Tool: *read_file*\n  Arguments: {'file_path': 'test.txt'}  \n"
+            >>> sanitized = agent._sanitize_llm_response(raw)
+            >>> print(sanitized)
+            Tool: read_file
+            Arguments: {"file_path": "test.txt"}
+        """
+        if not isinstance(raw_response, str):
+            logger.warning(f"Expected string input, got {type(raw_response).__name__}")
+            return str(raw_response) if raw_response is not None else ""
+        
+        logger.debug(f"Sanitizing LLM response (length: {len(raw_response)} chars)")
+        
+        # Start with the raw response
+        sanitized = raw_response
+        
+        # Step 1: Remove popular Markdown symbols (more targeted approach)
+        # Process in order from most specific to least specific
+        
+        # Remove triple+ asterisks first
+        sanitized = re.sub(r'\*{3,}', '', sanitized)
+        
+        # Remove double asterisks for bold (**text** -> text)
+        sanitized = re.sub(r'\*\*([^*\n]+?)\*\*', r'\1', sanitized)
+        
+        # Remove single asterisks for italic (*text* -> text)  
+        sanitized = re.sub(r'\*([^*\n]+?)\*', r'\1', sanitized)
+        
+        # Remove any remaining isolated asterisks used for emphasis
+        sanitized = re.sub(r'\*+', '', sanitized)
+        
+        # Remove underscores used for emphasis, but preserve underscores in identifiers
+        # This is tricky because we need to distinguish between _emphasis_ and file_path
+        
+        # Process double underscores first (__text__ -> text) 
+        # Allow underscores within double underscore patterns too
+        sanitized = re.sub(r'\b__([^_\s]+(?:_[^_\s]+)*?)__\b', r'\1', sanitized)
+        
+        # Process single underscores for emphasis (_text_ -> text)
+        # This handles both simple words and compound identifiers like _read_file_
+        # Using word boundaries to properly detect emphasis patterns
+        sanitized = re.sub(r'\b_([^_\s]+(?:_[^_\s]+)*?)_\b', r'\1', sanitized)
+        
+        # Remove hash symbols used for headers at start of lines
+        sanitized = re.sub(r'^#+\s*', '', sanitized, flags=re.MULTILINE)
+        
+        # Step 2: Strip leading and trailing whitespace from each line
+        lines = sanitized.split('\n')
+        stripped_lines = [line.strip() for line in lines]
+        sanitized = '\n'.join(stripped_lines)
+        
+        # Step 3: Fix common JSON errors
+        # Replace single quotes with double quotes in JSON-like structures
+        # This is a targeted fix for argument values
+        sanitized = re.sub(r"'([^']*)'", r'"\1"', sanitized)
+        
+        # Additional JSON fixes for common malformed patterns
+        # Fix unquoted keys in JSON-like structures (key: value -> "key": value)
+        sanitized = re.sub(r'(\w+)(\s*:\s*"[^"]*")', r'"\1"\2', sanitized)
+        
+        # Remove any remaining empty lines caused by cleaning
+        lines = [line for line in sanitized.split('\n') if line.strip()]
+        sanitized = '\n'.join(lines)
+        
+        logger.debug(f"Sanitization complete (new length: {len(sanitized)} chars)")
+        
+        return sanitized
     
     def _parse_llm_response(self, llm_response: str, state: "State") -> None:
         """Parse LLM response to extract tool name and arguments using multi-stage approach.
