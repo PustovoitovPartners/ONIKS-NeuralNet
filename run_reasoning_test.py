@@ -166,11 +166,46 @@ def main() -> None:
             if key not in ['last_prompt', 'llm_response']:  # Skip the long texts
                 print(f"   {key}: {value}")
         
+        # Final verification check - ensure no errors in tool outputs
+        print("\n🔍 Final Verification Check:")
+        error_found = False
+        if final_state.tool_outputs:
+            for tool_name, output in final_state.tool_outputs.items():
+                if isinstance(output, str) and "Error:" in output:
+                    error_found = True
+                    print(f"   ❌ Error detected in {tool_name}: {output}")
+                    break
+            
+            if not error_found:
+                print("   ✅ No errors detected in tool outputs")
+        else:
+            print("   ⚠️  No tool outputs to verify")
+        
+        if error_found:
+            # Display prominent failure message
+            print("\n" + "="*50)
+            print("*" * 50)
+            print("**                                              **")
+            print("**            DEMONSTRATION FAILED             **")
+            print("**                                              **")
+            print("*" * 50)
+            print("="*50)
+            print("\n❌ Errors were found in tool execution outputs.")
+            print("The demonstration did not complete successfully.")
+            sys.exit(1)
+        
         print("\n✅ Demonstration completed successfully!")
         
     except Exception as e:
         print(f"❌ Error during graph execution: {e}")
-        return
+        print("\n" + "="*50)
+        print("*" * 50)
+        print("**                                              **")
+        print("**            DEMONSTRATION FAILED             **")
+        print("**                                              **")
+        print("*" * 50)
+        print("="*50)
+        sys.exit(1)
     
     # Clean up
     print("\n9. Cleaning up...")

@@ -7,6 +7,7 @@ and making decisions about next steps in graph execution.
 
 import re
 import json
+import ast
 import logging
 from typing import List, Optional, TYPE_CHECKING
 
@@ -139,16 +140,17 @@ class ReasoningAgent(BaseAgent):
         return result_state
     
     def _generate_llm_prompt(self, goal: str) -> str:
-        """Generate a structured prompt for LLM integration.
+        """Generate a structured prompt for LLM integration with one-shot examples.
         
         Creates a comprehensive prompt that includes the goal, available tools,
-        and a clear question for the LLM to answer about tool selection.
+        clear examples of proper response formatting, and a specific question
+        for the LLM to answer about tool selection.
         
         Args:
             goal: The high-level goal extracted from the state.
             
         Returns:
-            Formatted prompt string ready for LLM integration.
+            Formatted prompt string ready for LLM integration with examples.
         """
         # Build the tools list section
         tools_section = "Available tools:\n"
@@ -160,20 +162,51 @@ class ReasoningAgent(BaseAgent):
                 description = getattr(tool, 'description', None) or "[No description provided]"
                 tools_section += f"- {tool.name}: {description}\n"
         
+        # Build examples section with one-shot examples
+        examples_section = """Examples of proper response format:
+
+Example 1 (File reading task):
+Goal: Read the contents of file task.txt
+Tool: read_file
+Arguments: {"file_path": "task.txt"}
+Reasoning: The goal explicitly asks to read a file, so the read_file tool is most appropriate with the file path as the argument.
+
+Example 2 (Data processing task):
+Goal: Process data from input.json and save results
+Tool: process_data
+Arguments: {"input_file": "input.json", "output_format": "json"}
+Reasoning: This goal requires data processing, so the process_data tool should be used with proper input file specification.
+
+Example 3 (Simple value task):
+Goal: Calculate the sum of numbers
+Tool: calculate
+Arguments: {"operation": "sum", "values": [1, 2, 3, 4, 5]}
+Reasoning: Mathematical calculation is needed, so the calculate tool with sum operation is appropriate.
+
+IMPORTANT FORMATTING RULES:
+- Tool name must be on a line starting with "Tool:"
+- Arguments must be on a line starting with "Arguments:" followed by valid JSON
+- Use double quotes in JSON, not single quotes
+- Ensure JSON is properly formatted and parseable
+- Include all required parameters for the selected tool"""
+        
         # Construct the complete prompt
         prompt = f"""Goal Analysis and Tool Selection
 
 Current Goal: {goal}
 
 {tools_section}
+
+{examples_section}
+
 Question: Which tool should be used next and with what arguments to achieve the goal?
 
 Please provide your reasoning and specify:
 1. The tool name to use
-2. The arguments required for the tool
+2. The arguments required for the tool (as valid JSON)
 3. Why this tool is appropriate for the current goal
 
-Response format:
+Response format (follow the examples above exactly):
 Tool: [tool_name]
 Arguments: [tool_arguments]
 Reasoning: [explanation]"""
@@ -181,9 +214,14 @@ Reasoning: [explanation]"""
         return prompt
     
     def _parse_llm_response(self, llm_response: str, state: "State") -> None:
-        """Parse LLM response to extract tool name and arguments.
+        """Parse LLM response to extract tool name and arguments using multi-stage approach.
         
-        This method parses the LLM response looking for specific patterns:
+        This method implements a robust multi-stage parsing strategy:
+        1. First tries clean JSON parsing with json.loads()
+        2. Falls back to regex extraction for malformed responses
+        3. Normalizes various argument formats (tuples, strings, etc.) to dictionaries
+        
+        Parsing patterns:
         - "Tool: [tool_name]" to extract the recommended tool
         - "Arguments: [json_object]" to extract the tool arguments
         
@@ -193,40 +231,304 @@ Reasoning: [explanation]"""
         """
         logger.info(f"Parsing LLM response (length: {len(llm_response)} chars)")
         
-        # Look for Tool: pattern
+        # Extract tool name using regex
+        self._extract_tool_name(llm_response, state)
+        
+        # Extract and parse arguments using multi-stage approach
+        self._extract_and_parse_arguments(llm_response, state)
+    
+    def _extract_tool_name(self, llm_response: str, state: "State") -> None:
+        """Extract tool name from LLM response.
+        
+        Args:
+            llm_response: The raw response text from the LLM.
+            state: The state object to update with extracted tool name.
+        """
         tool_match = re.search(r'Tool:\s*([^\n]+)', llm_response, re.IGNORECASE)
         if tool_match:
             tool_name = tool_match.group(1).strip()
+            # Clean up tool name (remove quotes, extra whitespace)
+            tool_name = tool_name.strip("\"'`").strip()
+            
             state.data['next_tool'] = tool_name
             state.add_message(f"Extracted tool from LLM response: {tool_name}")
             logger.info(f"Extracted tool: {tool_name}")
         else:
-            state.add_message("No tool found in LLM response")
-            logger.warning("No 'Tool:' pattern found in LLM response")
+            # Try fallback patterns for tool detection
+            fallback_match = re.search(r'(?:tool to use is|use tool|use the tool)\s+(\w+)', 
+                                     llm_response, re.IGNORECASE)
+            if fallback_match:
+                tool_name = fallback_match.group(1).strip()
+                state.data['next_tool'] = tool_name
+                state.add_message(f"Extracted tool using fallback pattern: {tool_name}")
+                logger.info(f"Extracted tool (fallback): {tool_name}")
+            else:
+                state.add_message("No tool found in LLM response")
+                logger.warning("No 'Tool:' pattern found in LLM response")
+    
+    def _extract_and_parse_arguments(self, llm_response: str, state: "State") -> None:
+        """Extract and parse arguments using multi-stage parsing approach.
         
-        # Look for Arguments: pattern
+        Implements robust parsing with multiple fallback strategies:
+        1. Direct JSON parsing
+        2. Regex extraction with bracket matching
+        3. Tuple/list normalization to dictionary format
+        4. Single value normalization
+        
+        Args:
+            llm_response: The raw response text from the LLM.
+            state: The state object to update with parsed arguments.
+        """
+        # Stage 1: Look for Arguments: pattern
         args_match = re.search(r'Arguments:\s*([^\n]+)', llm_response, re.IGNORECASE)
-        if args_match:
-            args_str = args_match.group(1).strip()
-            try:
-                # Try to parse as JSON
-                tool_args = json.loads(args_str)
-                state.data['tool_args'] = tool_args
-                
-                # Also set individual argument keys in state.data for ToolNode compatibility
-                if isinstance(tool_args, dict):
-                    for key, value in tool_args.items():
-                        state.data[key] = value
-                
-                state.add_message(f"Extracted arguments from LLM response: {tool_args}")
-                logger.info(f"Extracted arguments: {tool_args}")
-                
-            except json.JSONDecodeError as e:
-                state.add_message(f"Failed to parse arguments as JSON: {args_str}")
-                logger.error(f"JSON parsing error for arguments '{args_str}': {e}")
+        if not args_match:
+            # Try to find arguments in parentheses or brackets anywhere in response
+            bracket_match = re.search(r'Arguments?\s*[\(\[\{]([^\)\]\}]+)[\)\]\}]', 
+                                    llm_response, re.IGNORECASE | re.DOTALL)
+            if bracket_match:
+                args_str = f"({bracket_match.group(1).strip()})"  # Wrap in parentheses for tuple parsing
+                logger.info("Found arguments in brackets using fallback regex")
+            else:
+                state.add_message("No arguments found in LLM response")
+                logger.warning("No 'Arguments:' pattern found in LLM response")
+                return
         else:
-            state.add_message("No arguments found in LLM response")
-            logger.warning("No 'Arguments:' pattern found in LLM response")
+            args_str = args_match.group(1).strip()
+        
+        # Stage 2: Multi-stage parsing of extracted arguments
+        parsed_args = self._parse_arguments_multi_stage(args_str, state)
+        
+        if parsed_args is not None:
+            state.data['tool_args'] = parsed_args
+            
+            # Set individual argument keys in state.data for ToolNode compatibility
+            if isinstance(parsed_args, dict):
+                for key, value in parsed_args.items():
+                    state.data[key] = value
+            
+            state.add_message(f"Extracted arguments from LLM response: {parsed_args}")
+            logger.info(f"Extracted arguments: {parsed_args}")
+    
+    def _parse_arguments_multi_stage(self, args_str: str, state: "State") -> any:
+        """Parse arguments string using multi-stage approach with normalization.
+        
+        Parsing stages:
+        1. Clean JSON parsing with json.loads()
+        2. Regex extraction for common patterns
+        3. Normalization of tuples, lists, and single values to dictionaries
+        4. Fallback string parsing
+        
+        Args:
+            args_str: The arguments string to parse.
+            state: The state object for logging messages.
+            
+        Returns:
+            Parsed arguments as dictionary, list, or None if parsing fails.
+        """
+        logger.debug(f"Multi-stage parsing arguments: {args_str}")
+        
+        # Stage 1: Try clean JSON parsing
+        try:
+            parsed_args = json.loads(args_str)
+            logger.debug("Stage 1: Successfully parsed as clean JSON")
+            return self._normalize_arguments(parsed_args, state)
+        except json.JSONDecodeError:
+            logger.debug("Stage 1: Clean JSON parsing failed, trying AST parsing")
+        
+        # Stage 1b: Try AST literal_eval for Python literals (tuples, lists, etc.)
+        try:
+            parsed_args = ast.literal_eval(args_str)
+            logger.debug("Stage 1b: Successfully parsed as Python literal")
+            return self._normalize_arguments(parsed_args, state)
+        except (ValueError, SyntaxError):
+            logger.debug("Stage 1b: AST parsing failed, trying regex extraction")
+            
+            # Special case: if it looks like a parenthesized expression that failed AST,
+            # try manual tuple parsing
+            if args_str.startswith('(') and args_str.endswith(')'):
+                content = args_str[1:-1].strip()
+                if ',' in content:
+                    values = [v.strip().strip("\"'`") for v in content.split(',') if v.strip()]
+                    logger.debug(f"Stage 1c: Manual tuple parsing result: {values}")
+                    return self._normalize_arguments(tuple(values), state)
+        
+        # Stage 2: Try regex extraction for common malformed patterns
+        normalized_args = self._extract_with_regex(args_str, state)
+        if normalized_args is not None:
+            return normalized_args
+        
+        # Stage 3: Try to extract values from various bracket patterns
+        bracket_extracted = self._extract_from_brackets(args_str, state)
+        if bracket_extracted is not None:
+            return bracket_extracted
+        
+        # Stage 4: Final fallback - treat as single string value
+        logger.warning(f"All parsing stages failed for arguments: {args_str}")
+        state.add_message(f"Failed to parse arguments, falling back to string interpretation: {args_str}")
+        
+        # Clean up the string
+        clean_str = args_str.strip("\"'`")
+        
+        # Try to guess the parameter name based on common patterns
+        if (any(keyword in clean_str.lower() for keyword in ['file', 'path', 'filename']) or
+            '.' in clean_str or '/' in clean_str or '\\' in clean_str):
+            return {'file_path': clean_str}
+        
+        return {'value': clean_str}
+    
+    def _normalize_arguments(self, parsed_args: any, state: "State") -> any:
+        """Normalize various argument formats to appropriate dictionaries.
+        
+        Handles normalization of:
+        - Tuples like ('task.txt',) -> {'file_path': 'task.txt'}
+        - Lists like ['task.txt'] -> {'file_path': 'task.txt'}
+        - Single strings -> {'file_path': string} or {'value': string}
+        
+        Args:
+            parsed_args: The parsed arguments to normalize.
+            state: The state object for logging messages.
+            
+        Returns:
+            Normalized arguments as dictionary.
+        """
+        if isinstance(parsed_args, dict):
+            logger.debug("Arguments already in dictionary format")
+            return parsed_args
+        
+        elif isinstance(parsed_args, (tuple, list)):
+            logger.debug(f"Normalizing {type(parsed_args).__name__} to dictionary")
+            if len(parsed_args) == 1:
+                value = parsed_args[0]
+                # Guess parameter name based on value content
+                if isinstance(value, str) and ('.' in value or '/' in value or '\\' in value):
+                    return {'file_path': value}
+                else:
+                    return {'value': value}
+            elif len(parsed_args) == 2:
+                # Check if first element looks like a filename/path
+                first_val = parsed_args[0]
+                if isinstance(first_val, str) and ('.' in first_val or '/' in first_val or '\\' in first_val):
+                    # Treat as file_path and additional argument
+                    return {'file_path': first_val, 'arg_1': parsed_args[1]}
+                else:
+                    # Assume key-value pair
+                    return {str(parsed_args[0]): parsed_args[1]}
+            else:
+                # Multiple values - create indexed dictionary
+                return {f'arg_{i}': val for i, val in enumerate(parsed_args)}
+        
+        elif isinstance(parsed_args, str):
+            logger.debug("Normalizing string to dictionary")
+            # Single string value - guess parameter name
+            if '.' in parsed_args or '/' in parsed_args or '\\' in parsed_args:
+                return {'file_path': parsed_args}
+            else:
+                return {'value': parsed_args}
+        
+        else:
+            logger.debug(f"Normalizing {type(parsed_args).__name__} to dictionary")
+            return {'value': parsed_args}
+    
+    def _extract_with_regex(self, args_str: str, state: "State") -> any:
+        """Extract arguments using regex patterns for common malformed formats.
+        
+        Handles patterns like:
+        - {'file_path': 'task.txt'} with missing quotes
+        - (file_path: task.txt) with wrong brackets
+        - file_path=task.txt parameter format
+        
+        Args:
+            args_str: The arguments string to parse with regex.
+            state: The state object for logging messages.
+            
+        Returns:
+            Extracted arguments as dictionary or None if extraction fails.
+        """
+        logger.debug("Stage 2: Attempting regex extraction")
+        
+        # Try to fix common JSON formatting issues
+        fixed_json = args_str
+        
+        # Fix missing quotes around keys
+        fixed_json = re.sub(r'(\w+):', r'"\1":', fixed_json)
+        
+        # Fix missing quotes around string values
+        fixed_json = re.sub(r':\s*([a-zA-Z_][a-zA-Z0-9_./\\-]*)', r': "\1"', fixed_json)
+        
+        # Fix single quotes to double quotes
+        fixed_json = fixed_json.replace("'", '"')
+        
+        # Try parsing the fixed JSON
+        try:
+            parsed_args = json.loads(fixed_json)
+            logger.debug("Stage 2: Successfully parsed with regex fixes")
+            return self._normalize_arguments(parsed_args, state)
+        except json.JSONDecodeError:
+            logger.debug("Stage 2: Regex-fixed JSON parsing failed")
+        
+        # Try key=value pattern extraction
+        kv_matches = re.findall(r'(\w+)\s*[=:]\s*([^,\s]+)', args_str)
+        if kv_matches:
+            result = {}
+            for key, value in kv_matches:
+                # Clean up value
+                value = value.strip("\"'`")
+                result[key] = value
+            logger.debug(f"Stage 2: Extracted key-value pairs: {result}")
+            return result
+        
+        return None
+    
+    def _extract_from_brackets(self, args_str: str, state: "State") -> any:
+        """Extract arguments from various bracket patterns.
+        
+        Handles patterns like:
+        - (task.txt) -> {'file_path': 'task.txt'}
+        - [task.txt, other] -> {'file_path': 'task.txt', 'arg_1': 'other'}
+        - {malformed json content}
+        
+        Args:
+            args_str: The arguments string to parse.
+            state: The state object for logging messages.
+            
+        Returns:
+            Extracted arguments as dictionary or None if extraction fails.
+        """
+        logger.debug("Stage 3: Attempting bracket content extraction")
+        
+        # Look for content in parentheses (tuple-like)
+        paren_match = re.search(r'\(([^)]+)\)', args_str)
+        if paren_match:
+            content = paren_match.group(1).strip()
+            # Split by comma and clean up
+            values = [v.strip().strip("\"'`") for v in content.split(',') if v.strip()]
+            logger.debug(f"Stage 3: Found parentheses content: {values}")
+            return self._normalize_arguments(tuple(values), state)
+        
+        # Look for content in square brackets (list-like)
+        bracket_match = re.search(r'\[([^\]]+)\]', args_str)
+        if bracket_match:
+            content = bracket_match.group(1).strip()
+            # Split by comma and clean up
+            values = [v.strip().strip("\"'`") for v in content.split(',') if v.strip()]
+            logger.debug(f"Stage 3: Found square bracket content: {values}")
+            return self._normalize_arguments(values, state)
+        
+        # Look for content in curly braces (dict-like)
+        brace_match = re.search(r'\{([^}]+)\}', args_str)
+        if brace_match:
+            content = brace_match.group(1).strip()
+            # Try to extract key-value pairs
+            kv_matches = re.findall(r'["\']?(\w+)["\']?\s*:\s*["\']?([^,}]+)["\']?', content)
+            if kv_matches:
+                result = {}
+                for key, value in kv_matches:
+                    result[key] = value.strip().strip("\"'`")
+                logger.debug(f"Stage 3: Extracted from braces: {result}")
+                return result
+        
+        logger.debug("Stage 3: No bracket patterns matched")
+        return None
     
     def _perform_basic_reasoning(self, goal: str, state: "State") -> None:
         """Perform basic fallback reasoning when LLM is unavailable.
