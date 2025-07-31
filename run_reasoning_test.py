@@ -1,14 +1,18 @@
 #!/usr/bin/env python3
-"""Demonstration script for testing the ReasoningAgent system.
+"""Multi-step demonstration script for the ReasoningAgent system.
 
-This script demonstrates the integration of ReasoningAgent with the graph execution
-framework, showing how intelligent agents can analyze goals, select tools, and
-coordinate with tool nodes to achieve objectives.
+This script demonstrates a comprehensive multi-step workflow where the ReasoningAgent
+serves as the central thinking node, coordinating with multiple tool nodes to
+accomplish a complex task requiring file creation and command execution.
 
-The script creates a simple workflow:
-1. ReasoningAgent analyzes a goal and determines which tool to use
-2. ToolNode executes the selected tool with provided arguments
-3. The process can continue with additional reasoning steps
+The demonstration workflow:
+1. ReasoningAgent analyzes the goal: create hello.txt with 'Hello ONIKS!' and display it
+2. Agent selects write_file tool to create the file
+3. Returns to ReasoningAgent for next step analysis
+4. Agent selects execute_bash_command tool to display file contents
+5. Returns to ReasoningAgent for completion check
+6. Agent detects task completion and sets completion flag
+7. Graph terminates when task is completed
 
 Usage:
     python run_reasoning_test.py
@@ -24,50 +28,176 @@ sys.path.insert(0, str(project_root))
 from oniks.core.graph import Graph, ToolNode
 from oniks.core.state import State
 from oniks.core.checkpoint import SQLiteCheckpointSaver
+from typing import Set, List, Dict, Optional
 from oniks.tools.file_tools import ReadFileTool
+from oniks.tools.fs_tools import ListFilesTool, WriteFileTool
+from oniks.tools.shell_tools import ExecuteBashCommandTool
 from oniks.agents.reasoning_agent import ReasoningAgent
 from oniks.llm.client import OllamaClient, OllamaConnectionError
 
 
-def create_test_file() -> None:
-    """Create a test file for the demonstration."""
-    test_file_path = project_root / "task.txt"
+class MultiStepGraph(Graph):
+    """Extended Graph class that allows re-execution of reasoning nodes for multi-step workflows.
     
-    if not test_file_path.exists():
-        with open(test_file_path, 'w', encoding='utf-8') as f:
-            f.write("This is a test file for the ReasoningAgent demonstration.\n")
-            f.write("The agent successfully identified the need to read this file!\n")
-            f.write("Content: Task completed successfully.\n")
-        print(f"Created test file: {test_file_path}")
-    else:
-        print(f"Test file already exists: {test_file_path}")
+    This class modifies the standard graph execution to allow specific nodes (like reasoning agents)
+    to be re-executed multiple times, enabling multi-step workflows where the reasoning agent
+    coordinates multiple tool executions.
+    """
+    
+    def __init__(self, checkpointer: Optional = None, reusable_nodes: Optional[Set[str]] = None):
+        """Initialize a MultiStepGraph.
+        
+        Args:
+            checkpointer: Optional checkpoint saver for state persistence.
+            reusable_nodes: Set of node names that can be re-executed multiple times.
+        """
+        super().__init__(checkpointer)
+        self.reusable_nodes = reusable_nodes or set()
+    
+    def execute(
+        self, 
+        initial_state: State, 
+        thread_id: str,
+        start_node: str = None,
+        max_iterations: int = 1000
+    ) -> State:
+        """Execute the graph with support for re-executable nodes.
+        
+        This method extends the base graph execution to allow certain nodes
+        to be re-executed multiple times, enabling multi-step workflows.
+        
+        Args:
+            initial_state: The initial state to begin execution with.
+            thread_id: Unique identifier for this execution thread/task.
+            start_node: Name of the starting node.
+            max_iterations: Maximum number of iterations to prevent infinite loops.
+            
+        Returns:
+            The final state after graph execution completes.
+        """
+        if not self.nodes:
+            raise ValueError("Cannot execute empty graph")
+        
+        if not thread_id:
+            raise ValueError("Thread ID cannot be empty or None")
+        
+        # Determine starting node
+        if start_node is None:
+            start_node = next(iter(self.nodes))
+        elif start_node not in self.nodes:
+            raise ValueError(f"Start node '{start_node}' does not exist in graph")
+        
+        current_state = initial_state.model_copy(deep=True)
+        current_nodes = [start_node]
+        visited_nodes: Set[str] = set()
+        iterations = 0
+        
+        current_state.add_message(f"Starting multi-step graph execution from node: {start_node}")
+        
+        # Save initial state if checkpointer is available
+        if self.checkpointer:
+            current_state.add_message(f"Saving initial checkpoint for thread: {thread_id}")
+            self.checkpointer.save(thread_id, current_state)
+        
+        while current_nodes and iterations < max_iterations:
+            iterations += 1
+            next_nodes = []
+            
+            for node_name in current_nodes:
+                # Allow re-execution of reusable nodes (like reasoning agents)
+                if node_name in visited_nodes and node_name not in self.reusable_nodes:
+                    continue
+                
+                visited_nodes.add(node_name)
+                node = self.nodes[node_name]
+                
+                current_state.add_message(f"Executing node: {node_name} (iteration: {iterations})")
+                
+                # Save state before execution
+                if self.checkpointer:
+                    current_state.add_message(f"Saving checkpoint before executing node: {node_name}")
+                    self.checkpointer.save(thread_id, current_state)
+                
+                # Execute current node
+                current_state = node.execute(current_state)
+                
+                # Save state after execution
+                if self.checkpointer:
+                    current_state.add_message(f"Saving checkpoint after executing node: {node_name}")
+                    self.checkpointer.save(thread_id, current_state)
+                
+                # Get next nodes based on edge conditions
+                next_candidates = self.get_next_nodes(node_name, current_state)
+                next_nodes.extend(next_candidates)
+            
+            # Remove duplicates while preserving order
+            current_nodes = list(dict.fromkeys(next_nodes))
+            
+            # Reset visited status for reusable nodes if they're going to be executed again
+            for node_name in current_nodes:
+                if node_name in self.reusable_nodes and node_name in visited_nodes:
+                    # Allow re-execution by removing from visited set
+                    visited_nodes.discard(node_name)
+        
+        if iterations >= max_iterations:
+            raise RuntimeError(
+                f"Multi-step graph execution exceeded maximum iterations ({max_iterations}). "
+                "Possible infinite loop detected."
+            )
+        
+        current_state.add_message("Multi-step graph execution completed")
+        
+        # Save final state
+        if self.checkpointer:
+            current_state.add_message(f"Saving final checkpoint for thread: {thread_id}")
+            self.checkpointer.save(thread_id, current_state)
+        
+        return current_state
+
+
+def cleanup_demo_files() -> None:
+    """Clean up any existing demo files before starting."""
+    demo_file_path = project_root / "hello.txt"
+    
+    if demo_file_path.exists():
+        demo_file_path.unlink()
+        print(f"Cleaned up existing demo file: {demo_file_path}")
 
 
 def main() -> None:
-    """Main demonstration function."""
-    print("=== ONIKS ReasoningAgent Demonstration ===\n")
+    """Main multi-step demonstration function."""
+    print("=== ONIKS Multi-Step ReasoningAgent Demonstration ===\n")
     
-    # Create test file for demonstration
-    create_test_file()
+    # Clean up any existing demo files
+    cleanup_demo_files()
     
-    # Initialize graph with checkpoint saver
-    print("1. Initializing graph and checkpoint saver...")
+    # Initialize multi-step graph with checkpoint saver
+    print("1. Initializing multi-step graph and checkpoint saver...")
     checkpointer = SQLiteCheckpointSaver("demo_checkpoints.db")
-    graph = Graph(checkpointer=checkpointer)
+    # Allow the reasoning agent to be re-executed for multi-step workflows
+    graph = MultiStepGraph(checkpointer=checkpointer, reusable_nodes={"reasoning_agent"})
     
-    # Create initial state with goal
-    print("2. Creating initial state with goal...")
+    # Create initial state with multi-step goal
+    print("2. Creating initial state with multi-step goal...")
     initial_state = State()
-    initial_state.data['goal'] = 'Read the contents of file task.txt'
-    initial_state.add_message("Demo started with file reading goal")
+    initial_state.data['goal'] = "Создай файл hello.txt с текстом 'Hello ONIKS!', а затем выведи его содержимое в консоль."
+    initial_state.data['task_completed'] = False
+    initial_state.add_message("Demo started with multi-step file creation and display goal")
     
     print(f"   Goal: {initial_state.data['goal']}")
+    print(f"   Task completion status: {initial_state.data['task_completed']}")
     
-    # Create tools
+    # Create all required tools
     print("3. Creating tools...")
-    read_file_tool = ReadFileTool()
-    print(f"   Created tool: {read_file_tool.name}")
-    print(f"   Tool description: {read_file_tool.description}")
+    list_files_tool = ListFilesTool()
+    write_file_tool = WriteFileTool()
+    execute_bash_tool = ExecuteBashCommandTool()
+    
+    tools = [list_files_tool, write_file_tool, execute_bash_tool]
+    
+    for tool in tools:
+        print(f"   Created tool: {tool.name}")
+        print(f"   Tool description: {tool.description}")
     
     # Create LLM client
     print("4. Creating LLM client...")
@@ -87,34 +217,67 @@ def main() -> None:
     
     # Create agents and nodes
     print("5. Creating agents and nodes...")
-    reasoning_agent = ReasoningAgent("reasoning_agent", [read_file_tool], llm_client)
-    file_reader_node = ToolNode("file_reader", read_file_tool)
+    reasoning_agent = ReasoningAgent("reasoning_agent", tools, llm_client)
+    
+    # Create tool nodes for each tool
+    list_files_node = ToolNode("list_files", list_files_tool)
+    write_file_node = ToolNode("write_file", write_file_tool)
+    execute_bash_node = ToolNode("execute_bash_command", execute_bash_tool)
+    
+    tool_nodes = [list_files_node, write_file_node, execute_bash_node]
     
     print(f"   Created reasoning agent: {reasoning_agent.name}")
-    print(f"   Created tool node: {file_reader_node.name}")
+    for node in tool_nodes:
+        print(f"   Created tool node: {node.name}")
     
     # Add nodes to graph
-    print("6. Building graph structure...")
+    print("6. Building comprehensive graph structure...")
     graph.add_node(reasoning_agent)
-    graph.add_node(file_reader_node)
+    for node in tool_nodes:
+        graph.add_node(node)
     
-    # Add edges with conditions
-    # From reasoning agent to file reader when next_tool is 'read_file'
+    # Add edges from reasoning agent to each tool node
     graph.add_edge(
         "reasoning_agent", 
-        "file_reader",
-        condition=lambda state: state.data.get('next_tool') == 'read_file'
+        "list_files",
+        condition=lambda state: state.data.get('next_tool') == 'list_files'
     )
     
-    # From file reader back to reasoning agent for potential next step
     graph.add_edge(
-        "file_reader",
+        "reasoning_agent", 
+        "write_file",
+        condition=lambda state: state.data.get('next_tool') == 'write_file'
+    )
+    
+    graph.add_edge(
+        "reasoning_agent", 
+        "execute_bash_command",
+        condition=lambda state: state.data.get('next_tool') == 'execute_bash_command'
+    )
+    
+    # Add edges from all tool nodes back to reasoning agent for next step analysis
+    # Each tool node can transition back to reasoning agent if task is not completed
+    graph.add_edge(
+        "list_files",
         "reasoning_agent",
-        condition=lambda state: state.data.get('continue_reasoning', False)
+        condition=lambda state: not state.data.get('task_completed', False)
+    )
+    
+    graph.add_edge(
+        "write_file",
+        "reasoning_agent",
+        condition=lambda state: not state.data.get('task_completed', False)
+    )
+    
+    graph.add_edge(
+        "execute_bash_command",
+        "reasoning_agent",
+        condition=lambda state: not state.data.get('task_completed', False)
     )
     
     print(f"   Graph nodes: {graph.get_node_count()}")
     print(f"   Graph edges: {graph.get_edge_count()}")
+    print("   Configured graph to terminate when task_completed = True")
     
     # Execute the graph
     print("7. Executing graph...")
@@ -157,7 +320,7 @@ def main() -> None:
         if final_state.tool_outputs:
             for tool_name, output in final_state.tool_outputs.items():
                 print(f"   Tool: {tool_name}")
-                print(f"   Output: {output}")
+                print(f"   Output: {output[:200]}{'...' if len(str(output)) > 200 else ''}")
         else:
             print("   No tool outputs")
         
@@ -166,20 +329,59 @@ def main() -> None:
             if key not in ['last_prompt', 'llm_response']:  # Skip the long texts
                 print(f"   {key}: {value}")
         
-        # Final verification check - ensure no errors in tool outputs
+        # Final verification check - ensure task completion
         print("\n🔍 Final Verification Check:")
         error_found = False
+        task_completed = final_state.data.get('task_completed', False)
+        
+        # Check for errors in tool outputs
         if final_state.tool_outputs:
             for tool_name, output in final_state.tool_outputs.items():
                 if isinstance(output, str) and "Error:" in output:
                     error_found = True
                     print(f"   ❌ Error detected in {tool_name}: {output}")
-                    break
             
             if not error_found:
                 print("   ✅ No errors detected in tool outputs")
+        
+        # Check if the task was completed successfully
+        if task_completed:
+            print("   ✅ Task completion flag set successfully")
+            
+            # Verify the hello.txt file was created
+            hello_file = project_root / "hello.txt"
+            if hello_file.exists():
+                with open(hello_file, 'r', encoding='utf-8') as f:
+                    content = f.read().strip()
+                if content == "Hello ONIKS!":
+                    print("   ✅ File hello.txt created with correct content")
+                else:
+                    print(f"   ❌ File hello.txt has incorrect content: {content}")
+                    error_found = True
+            else:
+                print("   ❌ File hello.txt was not created")
+                error_found = True
+                
+            # Check if file content was displayed in command output
+            bash_output_found = False
+            if final_state.tool_outputs:
+                for tool_name, output in final_state.tool_outputs.items():
+                    if tool_name == 'execute_bash_command' and isinstance(output, str):
+                        if 'Hello ONIKS!' in output:
+                            print("   ✅ File content displayed successfully via bash command")
+                            bash_output_found = True
+                            break
+            
+            if not bash_output_found:
+                print("   ❌ File content was not displayed via bash command")
+                error_found = True
         else:
+            print("   ❌ Task completion flag not set")
+            error_found = True
+        
+        if not final_state.tool_outputs:
             print("   ⚠️  No tool outputs to verify")
+            error_found = True
         
         if error_found:
             # Display prominent failure message
@@ -213,6 +415,11 @@ def main() -> None:
     if checkpoint_file.exists():
         checkpoint_file.unlink()
         print("   Removed checkpoint database")
+    
+    # Keep the demo file for user inspection
+    hello_file = project_root / "hello.txt"
+    if hello_file.exists():
+        print(f"   Demo file preserved for inspection: {hello_file}")
 
 
 if __name__ == "__main__":

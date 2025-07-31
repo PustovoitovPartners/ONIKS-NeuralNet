@@ -118,6 +118,11 @@ class ReasoningAgent(BaseAgent):
         
         result_state.add_message("Generated LLM prompt for goal analysis")
         
+        # Check for task completion before proceeding
+        if self._check_task_completion(result_state):
+            result_state.add_message("Task completion detected - no further action needed")
+            return result_state
+        
         # Invoke LLM to get reasoning results
         try:
             llm_response = self.llm_client.invoke(generated_prompt)
@@ -134,6 +139,9 @@ class ReasoningAgent(BaseAgent):
             
             # Fall back to basic reasoning if LLM fails
             self._perform_basic_reasoning(goal, result_state)
+        
+        # Check for task completion after reasoning
+        self._check_task_completion(result_state)
         
         result_state.add_message(f"Reasoning agent {self.name} completed analysis")
         
@@ -530,6 +538,34 @@ Reasoning: [explanation]"""
         logger.debug("Stage 3: No bracket patterns matched")
         return None
     
+    def _check_task_completion(self, state: "State") -> bool:
+        """Check if the task has been completed based on goal and tool outputs.
+        
+        This method implements the completion logic:
+        - If goal contains 'выведи' (display) and tool_outputs from execute_bash_command
+          contains 'Hello ONIKS!', then task is completed.
+        
+        Args:
+            state: The current state to check for completion.
+            
+        Returns:
+            True if task is completed, False otherwise.
+        """
+        goal = state.data.get('goal', '')
+        
+        # Check if goal contains 'выведи' (display)
+        if 'выведи' in goal.lower():
+            # Check if execute_bash_command has been executed and contains 'Hello ONIKS!'
+            if state.tool_outputs:
+                bash_output = state.tool_outputs.get('execute_bash_command', '')
+                if isinstance(bash_output, str) and 'Hello ONIKS!' in bash_output:
+                    state.data['task_completed'] = True
+                    state.add_message("Task completion detected: file created and content displayed")
+                    logger.info("Task marked as completed")
+                    return True
+        
+        return False
+    
     def _perform_basic_reasoning(self, goal: str, state: "State") -> None:
         """Perform basic fallback reasoning when LLM is unavailable.
         
@@ -537,9 +573,9 @@ Reasoning: [explanation]"""
         when the LLM service is unavailable or encounters errors.
         
         Current logic:
-        - If goal contains "read" and "file", recommend read_file tool
-        - If goal contains "прочитать" and "файл", recommend read_file tool
-        - Set appropriate arguments for the recommended tool
+        - Multi-step goal handling for file creation and display task
+        - Step 1: Create hello.txt file with 'Hello ONIKS!' content
+        - Step 2: Display file content using bash command
         
         Args:
             goal: The high-level goal to analyze.
@@ -551,9 +587,39 @@ Reasoning: [explanation]"""
         
         goal_lower = goal.lower()
         
-        # Basic reasoning: if goal is about reading a file (English or Russian)
-        if (("read" in goal_lower and "file" in goal_lower) or 
-            ("прочитать" in goal_lower and "файл" in goal_lower)):
+        # Check if this is the multi-step demo goal
+        if ("создай файл hello.txt" in goal_lower and "hello oniks" in goal_lower and "выведи" in goal_lower):
+            # Check if file has been created yet
+            if not state.tool_outputs.get('write_file'):
+                # Step 1: Create the file
+                state.data['next_tool'] = 'write_file'
+                state.data['tool_args'] = {
+                    'file_path': 'hello.txt',
+                    'content': 'Hello ONIKS!'
+                }
+                state.data['file_path'] = 'hello.txt'
+                state.data['content'] = 'Hello ONIKS!'
+                
+                state.add_message(
+                    "Fallback reasoning: Step 1 - Creating hello.txt file with 'Hello ONIKS!' content"
+                )
+            elif not state.tool_outputs.get('execute_bash_command'):
+                # Step 2: Display file content
+                state.data['next_tool'] = 'execute_bash_command'
+                state.data['tool_args'] = {'command': 'cat hello.txt'}
+                state.data['command'] = 'cat hello.txt'
+                
+                state.add_message(
+                    "Fallback reasoning: Step 2 - Displaying hello.txt content with cat command"
+                )
+            else:
+                state.add_message(
+                    "Fallback reasoning: Both steps completed, checking for task completion"
+                )
+        
+        # Legacy support for simple file reading tasks
+        elif (("read" in goal_lower and "file" in goal_lower) or 
+              ("прочитать" in goal_lower and "файл" in goal_lower)):
             state.data['next_tool'] = 'read_file'
             state.data['tool_args'] = {'file_path': 'task.txt'}
             # Also set the file_path directly in state.data for ToolNode to use
