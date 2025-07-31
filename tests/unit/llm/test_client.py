@@ -58,7 +58,7 @@ class TestOllamaClient:
         
         # Verify the client was called correctly
         mock_client_instance.chat.assert_called_once_with(
-            model="llama3",
+            model="tinyllama",
             messages=[
                 {
                     'role': 'user',
@@ -130,7 +130,7 @@ class TestOllamaClient:
         
         mock_response = {
             'models': [
-                {'name': 'llama3:latest'},
+                {'name': 'tinyllama:latest'},
                 {'name': 'llama2:latest'},
             ]
         }
@@ -138,7 +138,7 @@ class TestOllamaClient:
         
         client = OllamaClient()
         
-        assert client.check_model_availability("llama3") is True
+        assert client.check_model_availability("tinyllama") is True
         assert client.check_model_availability("llama2") is True
         assert client.check_model_availability("nonexistent") is False
     
@@ -152,7 +152,7 @@ class TestOllamaClient:
         
         client = OllamaClient()
         
-        assert client.check_model_availability("llama3") is False
+        assert client.check_model_availability("tinyllama") is False
     
     @patch('oniks.llm.client.ollama.Client')
     def test_list_available_models_success(self, mock_ollama_client_class):
@@ -162,7 +162,7 @@ class TestOllamaClient:
         
         mock_response = {
             'models': [
-                {'name': 'llama3:latest'},
+                {'name': 'tinyllama:latest'},
                 {'name': 'llama2:latest'},
                 {'name': 'codellama:latest'},
             ]
@@ -173,7 +173,7 @@ class TestOllamaClient:
         models = client.list_available_models()
         
         assert len(models) == 3
-        assert 'llama3:latest' in models
+        assert 'tinyllama:latest' in models
         assert 'llama2:latest' in models
         assert 'codellama:latest' in models
     
