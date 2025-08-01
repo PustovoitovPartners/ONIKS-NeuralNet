@@ -189,7 +189,7 @@ def main() -> None:
     # Create initial state with complex goal for hierarchical planning
     print("2. Creating initial state with complex goal for hierarchical planning...")
     initial_state = State()
-    initial_state.data['goal'] = "Create a directory named 'output', and inside it, create a file 'log.txt' with the text 'System test OK'"
+    initial_state.data['goal'] = "First, create a Python file named 'hello_oniks.py' that contains the code 'print(\"Hello ONIKS\")'. Second, refactor that file so it takes a command-line argument and prints that argument instead. Finally, execute the refactored script with the argument 'K Prize Mission Ready'."
     initial_state.add_message("Demo started with complex goal that will be decomposed into atomic subtasks")
     
     print(f"   Goal: {initial_state.data['goal']}")
