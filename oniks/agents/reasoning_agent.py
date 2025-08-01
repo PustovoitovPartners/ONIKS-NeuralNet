@@ -402,16 +402,17 @@ The task is atomic and self-contained - simply choose the tool that directly acc
         # Stage 2: Multi-stage parsing of extracted arguments
         parsed_args = self._parse_arguments_multi_stage(args_str, state)
         
-        if parsed_args is not None:
-            state.data['tool_args'] = parsed_args
-            
-            # Set individual argument keys in state.data for ToolNode compatibility
-            if isinstance(parsed_args, dict):
-                for key, value in parsed_args.items():
-                    state.data[key] = value
-            
-            state.add_message(f"Extracted arguments from LLM response: {parsed_args}")
-            logger.info(f"Extracted arguments: {parsed_args}")
+        # Always set tool_args since _parse_arguments_multi_stage never returns None for failure
+        # (it always falls back to some parsed result or creates a fallback dict)
+        state.data['tool_args'] = parsed_args
+        
+        # Set individual argument keys in state.data for ToolNode compatibility
+        if isinstance(parsed_args, dict):
+            for key, value in parsed_args.items():
+                state.data[key] = value
+        
+        state.add_message(f"Extracted arguments from LLM response: {parsed_args}")
+        logger.info(f"Extracted arguments: {parsed_args}")
     
     def _parse_arguments_multi_stage(self, args_str: str, state: "State") -> any:
         """Parse arguments string using multi-stage approach with normalization.
@@ -481,35 +482,56 @@ The task is atomic and self-contained - simply choose the tool that directly acc
         return {'value': clean_str}
     
     def _normalize_arguments(self, parsed_args: any, state: "State") -> any:
-        """Normalize various argument formats to appropriate dictionaries.
+        """Normalize various argument formats while preserving valid data structures.
+        
+        This method now preserves properly structured data types (lists, dicts, booleans, etc.)
+        that were successfully parsed by ast.literal_eval or json.loads. Normalization to 
+        dictionaries only occurs for ambiguous structures like single-element tuples or
+        unstructured strings that need parameter name guessing.
         
         Handles normalization of:
-        - Tuples like ('task.txt',) -> {'file_path': 'task.txt'}
-        - Lists like ['task.txt'] -> {'file_path': 'task.txt'}
-        - Single strings -> {'file_path': string} or {'value': string}
+        - Dictionaries: Preserved as-is
+        - Lists: Preserved as-is (FIXED: no longer converted to indexed dicts)
+        - Booleans, None, numbers: Preserved as-is (FIXED)
+        - Single-element tuples: Converted to {'param': value} with guessed param name
+        - Multi-element tuples: Only normalized if they appear to be unstructured arguments
+        - Single strings: Converted to {'param': value} with guessed param name
         
         Args:
             parsed_args: The parsed arguments to normalize.
             state: The state object for logging messages.
             
         Returns:
-            Normalized arguments as dictionary.
+            Normalized arguments preserving original data types when appropriate.
         """
+        # Preserve dictionaries as-is - they're already properly structured
         if isinstance(parsed_args, dict):
-            logger.debug("Arguments already in dictionary format")
+            logger.debug("Arguments already in dictionary format - preserving as-is")
             return parsed_args
         
-        elif isinstance(parsed_args, (tuple, list)):
-            logger.debug(f"Normalizing {type(parsed_args).__name__} to dictionary")
+        # FIXED: Preserve lists as-is - they're valid Python data structures
+        # Lists should not be converted to indexed dictionaries
+        elif isinstance(parsed_args, list):
+            logger.debug("Arguments are a list - preserving as-is")
+            return parsed_args
+        
+        # FIXED: Preserve other primitive types (bool, None, numbers) as-is
+        elif isinstance(parsed_args, (bool, type(None), int, float)):
+            logger.debug(f"Arguments are {type(parsed_args).__name__} - preserving as-is")
+            return parsed_args
+        
+        # Handle tuples with special normalization logic
+        elif isinstance(parsed_args, tuple):
+            logger.debug(f"Normalizing tuple to appropriate format")
             if len(parsed_args) == 1:
                 value = parsed_args[0]
-                # Guess parameter name based on value content
+                # Single-element tuple gets converted to dict with guessed parameter name
                 if isinstance(value, str) and ('.' in value or '/' in value or '\\' in value):
                     return {'file_path': value}
                 else:
                     return {'value': value}
             elif len(parsed_args) == 2:
-                # Check if first element looks like a filename/path
+                # Two-element tuple: check if it's a key-value pair or path + argument
                 first_val = parsed_args[0]
                 if isinstance(first_val, str) and ('.' in first_val or '/' in first_val or '\\' in first_val):
                     # Treat as file_path and additional argument
@@ -518,20 +540,24 @@ The task is atomic and self-contained - simply choose the tool that directly acc
                     # Assume key-value pair
                     return {str(parsed_args[0]): parsed_args[1]}
             else:
-                # Multiple values - create indexed dictionary
-                return {f'arg_{i}': val for i, val in enumerate(parsed_args)}
+                # Multi-element tuple: preserve as-is unless it appears to be unstructured args
+                # For now, preserve tuples as-is to maintain data integrity
+                logger.debug("Multi-element tuple preserved as-is")
+                return parsed_args
         
+        # Handle single strings by guessing parameter names
         elif isinstance(parsed_args, str):
-            logger.debug("Normalizing string to dictionary")
+            logger.debug("Normalizing string to dictionary with guessed parameter name")
             # Single string value - guess parameter name
             if '.' in parsed_args or '/' in parsed_args or '\\' in parsed_args:
                 return {'file_path': parsed_args}
             else:
                 return {'value': parsed_args}
         
+        # Handle any other types by preserving them as-is
         else:
-            logger.debug(f"Normalizing {type(parsed_args).__name__} to dictionary")
-            return {'value': parsed_args}
+            logger.debug(f"Preserving {type(parsed_args).__name__} as-is")
+            return parsed_args
     
     def _extract_with_regex(self, args_str: str, state: "State") -> any:
         """Extract arguments using regex patterns for common malformed formats.
@@ -836,15 +862,17 @@ The task is atomic and self-contained - simply choose the tool that directly acc
             
             # Parse arguments if any
             if args_str:
-                args_dict = self._parse_function_arguments(args_str)
-                if args_dict is not None:
-                    state.data['tool_args'] = args_dict
+                parsed_args = self._parse_function_arguments(args_str)
+                if parsed_args is not None:
+                    state.data['tool_args'] = parsed_args
                     
                     # Set individual argument keys in state.data for ToolNode compatibility
-                    for key, value in args_dict.items():
-                        state.data[key] = value
+                    # Only set individual keys if parsed_args is a dictionary
+                    if isinstance(parsed_args, dict):
+                        for key, value in parsed_args.items():
+                            state.data[key] = value
                     
-                    state.add_message(f"Extracted arguments: {args_dict}")
+                    state.add_message(f"Extracted arguments: {parsed_args}")
                 else:
                     logger.warning(f"Failed to parse arguments: {args_str}")
                     return False
@@ -859,19 +887,27 @@ The task is atomic and self-contained - simply choose the tool that directly acc
             logger.error(f"Error parsing function call '{function_call}': {e}")
             return False
     
-    def _parse_function_arguments(self, args_str: str) -> Optional[dict]:
-        """Parse function call arguments string into a dictionary.
+    def _parse_function_arguments(self, args_str: str) -> Optional[any]:
+        """Parse function call arguments string preserving original data types.
+        
+        This method now uses ast.literal_eval as the preferred parsing method for
+        robust handling of all Python data types including lists, dicts, booleans, etc.
         
         Handles various argument formats:
         - Keyword arguments: file_path='hello.txt', content='Hello World'
         - Mixed quotes: file_path="hello.txt", content='Hello World'
+        - Lists: files=['a.txt', 'b.txt']
+        - Dicts: config={'debug': True, 'port': 8080}
+        - Booleans: enabled=True, debug=False
+        - Numbers: count=42, ratio=3.14
+        - None values: optional=None
         - No arguments: (empty string)
         
         Args:
             args_str: The arguments string to parse (content inside parentheses).
             
         Returns:
-            Dictionary of argument name-value pairs, or None if parsing fails.
+            Parsed arguments as dictionary, list, or other Python types, or None if parsing fails.
         """
         if not args_str.strip():
             return {}
@@ -890,27 +926,43 @@ The task is atomic and self-contained - simply choose the tool that directly acc
                     # Handle keyword arguments
                     for keyword in parsed.body.keywords:
                         if keyword.arg:  # keyword.arg is the parameter name
-                            # Extract the value
-                            if isinstance(keyword.value, ast.Constant):
-                                args_dict[keyword.arg] = keyword.value.value
-                            elif isinstance(keyword.value, ast.Str):  # Python < 3.8 compatibility
-                                args_dict[keyword.arg] = keyword.value.s
-                            elif isinstance(keyword.value, ast.Num):  # Python < 3.8 compatibility
-                                args_dict[keyword.arg] = keyword.value.n
-                            else:
-                                # For more complex expressions, convert back to string
+                            # Extract the value using ast.literal_eval for safe parsing
+                            try:
+                                # First try to extract simple constants
+                                if isinstance(keyword.value, ast.Constant):
+                                    args_dict[keyword.arg] = keyword.value.value
+                                elif isinstance(keyword.value, ast.Str):  # Python < 3.8 compatibility
+                                    args_dict[keyword.arg] = keyword.value.s
+                                elif isinstance(keyword.value, ast.Num):  # Python < 3.8 compatibility
+                                    args_dict[keyword.arg] = keyword.value.n
+                                else:
+                                    # For complex expressions (lists, dicts, etc.), use ast.literal_eval
+                                    # Convert the AST node back to string and parse it safely
+                                    value_str = ast.unparse(keyword.value)
+                                    args_dict[keyword.arg] = ast.literal_eval(value_str)
+                            except (ValueError, SyntaxError) as e:
+                                # If ast.literal_eval fails, fall back to string representation
+                                logger.debug(f"Failed to parse complex value for {keyword.arg}: {e}")
                                 args_dict[keyword.arg] = ast.unparse(keyword.value)
                     
                     # Handle positional arguments (if any)
                     for i, arg in enumerate(parsed.body.args):
-                        if isinstance(arg, ast.Constant):
-                            args_dict[f'arg_{i}'] = arg.value
-                        elif isinstance(arg, ast.Str):  # Python < 3.8 compatibility
-                            args_dict[f'arg_{i}'] = arg.s
-                        elif isinstance(arg, ast.Num):  # Python < 3.8 compatibility
-                            args_dict[f'arg_{i}'] = arg.n
-                        else:
-                            # For more complex expressions, convert back to string
+                        try:
+                            # First try to extract simple constants
+                            if isinstance(arg, ast.Constant):
+                                args_dict[f'arg_{i}'] = arg.value
+                            elif isinstance(arg, ast.Str):  # Python < 3.8 compatibility
+                                args_dict[f'arg_{i}'] = arg.s
+                            elif isinstance(arg, ast.Num):  # Python < 3.8 compatibility
+                                args_dict[f'arg_{i}'] = arg.n
+                            else:
+                                # For complex expressions (lists, dicts, etc.), use ast.literal_eval
+                                # Convert the AST node back to string and parse it safely
+                                value_str = ast.unparse(arg)
+                                args_dict[f'arg_{i}'] = ast.literal_eval(value_str)
+                        except (ValueError, SyntaxError) as e:
+                            # If ast.literal_eval fails, fall back to string representation
+                            logger.debug(f"Failed to parse complex value for arg_{i}: {e}")
                             args_dict[f'arg_{i}'] = ast.unparse(arg)
                     
                     logger.debug(f"AST parsing successful: {args_dict}")
@@ -927,24 +979,40 @@ The task is atomic and self-contained - simply choose the tool that directly acc
             import re
             args_dict = {}
             
-            # Pattern to match key=value pairs with quoted values
-            # Handles both single and double quotes
-            pattern = r"(\w+)\s*=\s*(['\"])([^'\"]*)\2"
+            # Enhanced pattern to match key=value pairs with various value types
+            # This pattern handles: strings, numbers, booleans, lists, dicts, None
+            pattern = r"(\w+)\s*=\s*(.+?)(?=,\s*\w+\s*=|$)"
             matches = re.findall(pattern, args_str)
             
             for match in matches:
                 key = match[0]
-                value = match[2]  # The captured content inside quotes
-                args_dict[key] = value
+                value_str = match[1].strip()
+                
+                # Try to parse the value using ast.literal_eval for safe evaluation
+                try:
+                    # Remove trailing comma if present
+                    value_str = value_str.rstrip(',').strip()
+                    parsed_value = ast.literal_eval(value_str)
+                    args_dict[key] = parsed_value
+                    logger.debug(f"Regex parsed {key}={value_str} as {type(parsed_value).__name__}: {parsed_value}")
+                except (ValueError, SyntaxError):
+                    # If ast.literal_eval fails, try simple string processing
+                    if value_str.startswith(("'", '"')) and value_str.endswith(("'", '"')):
+                        # Remove quotes for string values
+                        args_dict[key] = value_str[1:-1]
+                    else:
+                        # Keep as string
+                        args_dict[key] = value_str
+                    logger.debug(f"Regex fallback for {key}={value_str} as string")
             
             if args_dict:
-                logger.debug(f"Regex parsing successful: {args_dict}")
+                logger.debug(f"Enhanced regex parsing successful: {args_dict}")
                 return args_dict
             else:
                 logger.warning(f"No keyword arguments found in: {args_str}")
                 
         except Exception as e:
-            logger.warning(f"Regex parsing failed: {e}")
+            logger.warning(f"Enhanced regex parsing failed: {e}")
         
         # Method 3: Last resort - try to extract simple values
         try:

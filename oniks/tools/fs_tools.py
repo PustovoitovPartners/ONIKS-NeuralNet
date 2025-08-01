@@ -6,6 +6,7 @@ as part of their workflow execution.
 """
 
 import os
+import shutil
 from pathlib import Path
 from typing import Any, List, Optional
 
@@ -431,3 +432,258 @@ class CreateDirectoryTool(Tool):
             return f"Error: Cannot create directory '{directory_path}': {str(e)}"
         except Exception as e:
             return f"Error: Unexpected error when creating directory '{directory_path}': {str(e)}"
+
+
+class CopyFileTool(Tool):
+    """Tool for copying files from a source path to a destination path.
+    
+    This tool provides the ability to copy files from one location to another,
+    creating parent directories for the destination if they don't exist. It handles
+    various error conditions gracefully and provides detailed feedback about
+    the operation results.
+    
+    The tool takes 'source_path' and 'destination_path' arguments and returns a
+    success message indicating the copy operation, or an error message if the
+    operation fails.
+    
+    Example:
+        >>> tool = CopyFileTool()
+        >>> result = tool.execute(source_path="/my/source.txt", destination_path="/my/backup/source.txt")
+        >>> print(result)
+        Successfully copied '/my/source.txt' to '/my/backup/source.txt'
+        
+        >>> result = tool.execute(source_path="/nonexistent.txt", destination_path="/backup.txt")
+        >>> print(result)
+        Error: Source file '/nonexistent.txt' not found
+    """
+    
+    def __init__(self) -> None:
+        """Initialize the CopyFileTool with name and description."""
+        super().__init__()
+        self.name = "copy_file"
+        self.description = (
+            "Copies a file from a source path to a destination path. "
+            "Arguments: {'source_path': 'str', 'destination_path': 'str'}"
+        )
+    
+    def execute(self, **kwargs: Any) -> str:
+        """Copy a file from source path to destination path.
+        
+        Args:
+            **kwargs: Must contain 'source_path' key with string value pointing to the
+                     source file path, and 'destination_path' key with string value
+                     pointing to the destination file path.
+        
+        Returns:
+            String containing success message with source and destination paths,
+            or an error message if the operation fails.
+        
+        Raises:
+            KeyError: If required arguments are not provided.
+            TypeError: If arguments have incorrect types.
+        """
+        # Validate required arguments
+        if 'source_path' not in kwargs:
+            return "Error: Missing required argument 'source_path'"
+        
+        if 'destination_path' not in kwargs:
+            return "Error: Missing required argument 'destination_path'"
+        
+        source_path = kwargs['source_path']
+        destination_path = kwargs['destination_path']
+        
+        # Validate argument types
+        if not isinstance(source_path, str):
+            return f"Error: 'source_path' must be a string, got {type(source_path).__name__}"
+        
+        if not isinstance(destination_path, str):
+            return f"Error: 'destination_path' must be a string, got {type(destination_path).__name__}"
+        
+        # Validate paths are not empty
+        if not source_path.strip():
+            return "Error: 'source_path' cannot be empty"
+        
+        if not destination_path.strip():
+            return "Error: 'destination_path' cannot be empty"
+        
+        try:
+            # Convert to Path objects for easier manipulation
+            source_path_obj = Path(source_path).resolve()
+            destination_path_obj = Path(destination_path).resolve()
+            
+            # Check if source file exists
+            if not source_path_obj.exists():
+                return f"Error: Source file '{source_path}' not found"
+            
+            # Check if source is a file
+            if not source_path_obj.is_file():
+                return f"Error: Source path '{source_path}' is not a file"
+            
+            # Check if source file is readable
+            if not os.access(source_path_obj, os.R_OK):
+                return f"Error: No read permission for source file '{source_path}'"
+            
+            # Create parent directories for destination if they don't exist
+            destination_parent = destination_path_obj.parent
+            if not destination_parent.exists():
+                try:
+                    destination_parent.mkdir(parents=True, exist_ok=True)
+                except PermissionError:
+                    return f"Error: Permission denied when creating parent directories for destination '{destination_path}'"
+                except OSError as e:
+                    return f"Error: Cannot create parent directories for destination '{destination_path}': {str(e)}"
+            
+            # Check if destination parent directory is writable
+            if not os.access(destination_parent, os.W_OK):
+                return f"Error: No write permission for destination directory '{destination_parent}'"
+            
+            # Check if destination already exists and is not a file
+            if destination_path_obj.exists() and not destination_path_obj.is_file():
+                return f"Error: Destination path '{destination_path}' exists but is not a file"
+            
+            # Perform the copy operation
+            try:
+                shutil.copy(source_path_obj, destination_path_obj)
+                return f"Successfully copied '{source_path_obj}' to '{destination_path_obj}'"
+                
+            except PermissionError:
+                return f"Error: Permission denied when copying to destination '{destination_path}'"
+            except OSError as e:
+                return f"Error: Cannot copy file: {str(e)}"
+            except shutil.SameFileError:
+                return f"Error: Source and destination refer to the same file"
+                
+        except OSError as e:
+            return f"Error: Invalid file path: {str(e)}"
+        except Exception as e:
+            return f"Error: Unexpected error when copying file: {str(e)}"
+
+
+class RenameFileTool(Tool):
+    """Tool for renaming or moving files from a source path to a destination path.
+    
+    This tool provides the ability to rename files or move them to different locations,
+    creating parent directories for the destination if they don't exist. It handles
+    various error conditions gracefully and provides detailed feedback about
+    the operation results.
+    
+    The tool takes 'source_path' and 'destination_path' arguments and returns a
+    success message indicating the rename/move operation, or an error message if the
+    operation fails.
+    
+    Example:
+        >>> tool = RenameFileTool()
+        >>> result = tool.execute(source_path="/my/old_name.txt", destination_path="/my/new_name.txt")
+        >>> print(result)
+        Successfully renamed '/my/old_name.txt' to '/my/new_name.txt'
+        
+        >>> result = tool.execute(source_path="/nonexistent.txt", destination_path="/new.txt")
+        >>> print(result)
+        Error: Source file '/nonexistent.txt' not found
+    """
+    
+    def __init__(self) -> None:
+        """Initialize the RenameFileTool with name and description."""
+        super().__init__()
+        self.name = "rename_file"
+        self.description = (
+            "Renames or moves a file from a source path to a destination path. "
+            "Arguments: {'source_path': 'str', 'destination_path': 'str'}"
+        )
+    
+    def execute(self, **kwargs: Any) -> str:
+        """Rename or move a file from source path to destination path.
+        
+        Args:
+            **kwargs: Must contain 'source_path' key with string value pointing to the
+                     source file path, and 'destination_path' key with string value
+                     pointing to the destination file path.
+        
+        Returns:
+            String containing success message with source and destination paths,
+            or an error message if the operation fails.
+        
+        Raises:
+            KeyError: If required arguments are not provided.
+            TypeError: If arguments have incorrect types.
+        """
+        # Validate required arguments
+        if 'source_path' not in kwargs:
+            return "Error: Missing required argument 'source_path'"
+        
+        if 'destination_path' not in kwargs:
+            return "Error: Missing required argument 'destination_path'"
+        
+        source_path = kwargs['source_path']
+        destination_path = kwargs['destination_path']
+        
+        # Validate argument types
+        if not isinstance(source_path, str):
+            return f"Error: 'source_path' must be a string, got {type(source_path).__name__}"
+        
+        if not isinstance(destination_path, str):
+            return f"Error: 'destination_path' must be a string, got {type(destination_path).__name__}"
+        
+        # Validate paths are not empty
+        if not source_path.strip():
+            return "Error: 'source_path' cannot be empty"
+        
+        if not destination_path.strip():
+            return "Error: 'destination_path' cannot be empty"
+        
+        try:
+            # Convert to Path objects for easier manipulation
+            source_path_obj = Path(source_path).resolve()
+            destination_path_obj = Path(destination_path).resolve()
+            
+            # Check if source file exists
+            if not source_path_obj.exists():
+                return f"Error: Source file '{source_path}' not found"
+            
+            # Check if source is a file
+            if not source_path_obj.is_file():
+                return f"Error: Source path '{source_path}' is not a file"
+            
+            # Check if source file is readable and writable (needed for rename)
+            if not os.access(source_path_obj, os.R_OK):
+                return f"Error: No read permission for source file '{source_path}'"
+            
+            if not os.access(source_path_obj.parent, os.W_OK):
+                return f"Error: No write permission for source directory '{source_path_obj.parent}'"
+            
+            # Create parent directories for destination if they don't exist
+            destination_parent = destination_path_obj.parent
+            if not destination_parent.exists():
+                try:
+                    destination_parent.mkdir(parents=True, exist_ok=True)
+                except PermissionError:
+                    return f"Error: Permission denied when creating parent directories for destination '{destination_path}'"
+                except OSError as e:
+                    return f"Error: Cannot create parent directories for destination '{destination_path}': {str(e)}"
+            
+            # Check if destination parent directory is writable
+            if not os.access(destination_parent, os.W_OK):
+                return f"Error: No write permission for destination directory '{destination_parent}'"
+            
+            # Check if trying to rename to the same path (check this first)
+            if source_path_obj == destination_path_obj:
+                return f"Error: Source and destination paths are the same"
+            
+            # Check if destination already exists
+            if destination_path_obj.exists():
+                return f"Error: Destination path '{destination_path}' already exists"
+            
+            # Perform the rename/move operation
+            try:
+                source_path_obj.rename(destination_path_obj)
+                return f"Successfully renamed '{source_path_obj}' to '{destination_path_obj}'"
+                
+            except PermissionError:
+                return f"Error: Permission denied when renaming to destination '{destination_path}'"
+            except OSError as e:
+                return f"Error: Cannot rename file: {str(e)}"
+                
+        except OSError as e:
+            return f"Error: Invalid file path: {str(e)}"
+        except Exception as e:
+            return f"Error: Unexpected error when renaming file: {str(e)}"
