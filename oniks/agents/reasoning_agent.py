@@ -77,20 +77,20 @@ class ReasoningAgent(BaseAgent):
         self.llm_client = llm_client
     
     def execute(self, state: "State") -> "State":
-        """Execute LLM-powered reasoning logic to determine next tool and arguments.
+        """Execute simplified reasoning logic for single subtask from plan[0].
         
-        This method implements the core reasoning logic of the agent:
-        1. Extracts the current high-level goal from state.data['goal']
-        2. Generates a structured prompt for LLM integration
-        3. Invokes the LLM through OllamaClient to get reasoning results
+        This method implements simplified reasoning logic that works with atomic subtasks:
+        1. Extracts the current subtask from state.data['plan'][0]
+        2. Generates a simple prompt for tool selection based on the atomic task
+        3. Invokes the LLM to get tool selection results
         4. Parses the LLM response to extract tool and arguments
         5. Updates the state with reasoning results
         
-        The LLM response is expected to contain "Tool: [tool_name]" and
-        "Arguments: [json_object]" lines that the agent will parse.
+        The agent no longer needs complex state management or history tracking since
+        each subtask is atomic and self-contained.
         
         Args:
-            state: The current state containing goal and other execution data.
+            state: The current state containing plan and other execution data.
             
         Returns:
             The modified state with reasoning results, including:
@@ -103,22 +103,30 @@ class ReasoningAgent(BaseAgent):
         result_state = state.model_copy(deep=True)
         
         # Add message about reasoning execution
-        result_state.add_message(f"Reasoning agent {self.name} starting LLM-powered analysis")
+        result_state.add_message(f"Reasoning agent {self.name} starting analysis of current subtask")
         
-        # Extract the current high-level goal
-        goal = result_state.data.get('goal', '')
+        # Extract the current subtask from plan[0]
+        plan = result_state.data.get('plan', [])
         
-        if not goal:
-            result_state.add_message("No goal found in state data")
+        if not plan or not isinstance(plan, list):
+            result_state.add_message("No plan found in state data or plan is empty")
             return result_state
         
-        # Generate structured prompt for LLM integration
-        generated_prompt = self._generate_llm_prompt(goal, result_state)
+        current_task = plan[0]
+        result_state.add_message(f"Current subtask: {current_task}")
+        
+        # Check if this is the final confirmation task
+        if "confirm that all previous steps are complete" in current_task.lower():
+            result_state.data['next_tool'] = 'task_complete'
+            result_state.data['tool_args'] = {}
+            result_state.add_message("Final confirmation task detected, selecting task_complete tool")
+            return result_state
+        
+        # Generate simplified prompt for tool selection
+        generated_prompt = self._generate_task_prompt(current_task)
         result_state.data['last_prompt'] = generated_prompt
         
-        result_state.add_message("Generated LLM prompt for goal analysis")
-        
-        # Removed old task completion check - now using formal task_complete tool
+        result_state.add_message("Generated simplified prompt for tool selection")
         
         # Invoke LLM to get reasoning results
         try:
@@ -139,30 +147,24 @@ class ReasoningAgent(BaseAgent):
             result_state.add_message("Falling back to basic reasoning")
             
             # Fall back to basic reasoning if LLM fails
-            self._perform_basic_reasoning(goal, result_state)
-        
-        # Removed old task completion check - now using formal task_complete tool
+            self._perform_basic_reasoning(current_task, result_state)
         
         result_state.add_message(f"Reasoning agent {self.name} completed analysis")
         
         return result_state
     
-    def _generate_llm_prompt(self, goal: str, state: "State") -> str:
-        """Generate an optimized structured prompt for weak LLM models.
+    def _generate_task_prompt(self, current_task: str) -> str:
+        """Generate a simplified prompt for tool selection based on atomic subtask.
         
-        Creates a comprehensive prompt with clear section dividers and instruction
-        at the end to leverage recency bias. Optimized for llama3:8b and other
-        small models while maintaining tool selection functionality.
-        
-        Includes history of previous steps to provide critical context about
-        what tools have already been executed and their results.
+        Creates a focused prompt that asks the LLM to select the appropriate tool
+        for a single, atomic subtask. This is much simpler than the previous complex
+        goal analysis since each task is self-contained and actionable.
         
         Args:
-            goal: The high-level goal extracted from the state.
-            state: The current state containing tool outputs and message history.
+            current_task: The current atomic subtask to accomplish.
             
         Returns:
-            Formatted prompt string optimized for weak LLMs with clear sections.
+            Formatted prompt string for tool selection.
         """
         # Build the tools list section
         tools_section = "--- AVAILABLE TOOLS ---\n"
@@ -174,228 +176,48 @@ class ReasoningAgent(BaseAgent):
                 description = getattr(tool, 'description', None) or "[Description not provided]"
                 tools_section += f"- {tool.name}: {description}\n"
         
-        # Build history section with previous steps
-        history_section = self._build_history_section(state)
-        
-        # Build examples section with clear dividers
-        examples_section = """--- CORRECT FORMAT EXAMPLES ---
+        # Build simplified examples section
+        examples_section = """--- EXAMPLES ---
 
-Example 1 (File Reading):
-Goal: Read the contents of file task.txt
-Tool: read_file
-Arguments: {"file_path": "task.txt"}
-Reasoning: Goal requires reading a file, so the read_file tool is most suitable.
+Example 1:
+Task: Create a file named 'hello.txt' with the content 'Hello World'
+Tool: write_file
+Arguments: {"file_path": "hello.txt", "content": "Hello World"}
 
-Example 2 (Data Processing):
-Goal: Process data from input.json and save results
-Tool: process_data
-Arguments: {"input_file": "input.json", "output_format": "json"}
-Reasoning: Data processing is needed, so we use process_data with the input file.
+Example 2:
+Task: Display the content of 'data.txt' to the console
+Tool: execute_bash_command
+Arguments: {"command": "cat data.txt"}
 
-Example 3 (Calculations):
-Goal: Calculate the sum of numbers
-Tool: calculate
-Arguments: {"operation": "sum", "values": [1, 2, 3, 4, 5]}
-Reasoning: Mathematical calculation is required, using the calculate tool.
+Example 3:
+Task: List all files in the current directory
+Tool: list_files
+Arguments: {}
 
 --- FORMATTING RULES ---
 - Tool name must be on a line starting with "Tool:"
 - Arguments must be on a line starting with "Arguments:" with valid JSON
 - Use double quotes in JSON, not single quotes
-- JSON must be properly formatted
-- Include all required parameters for the selected tool"""
+- JSON must be properly formatted"""
         
-        # Construct the complete prompt with clear sections
-        prompt_parts = [
-            "--- GOAL ANALYSIS AND TOOL SELECTION ---\n",
-            "--- CURRENT GOAL ---",
-            f"{goal}\n",
-            f"{tools_section}\n"
-        ]
-        
-        # Add history section if there are previous steps
-        if history_section:
-            prompt_parts.extend([f"{history_section}\n"])
-        
-        prompt_parts.extend([
-            f"{examples_section}\n",
-            "--- QUESTION ---",
-            "Which tool should be used and with what arguments to achieve the goal?\n",
-            "--- INSTRUCTION ---",
-            "Your task is to choose the SINGLE NEXT logical step. Follow this algorithm precisely:",
-            "1.  **Analyze the `CURRENT GOAL`**.",
-            "2.  **Review the `HISTORY OF PREVIOUS STEPS`** to understand what has already been accomplished.",
-            "3.  **Compare the HISTORY to the GOAL**. Have all parts of the goal been met?",
-            "4.  **If the goal is NOT fully met**, choose the ONE tool from `AVAILABLE TOOLS` that completes the very next required step.",
-            "5.  **If ALL parts of the goal ARE met**, you MUST respond with the tool \"task_complete\" and empty arguments: `Arguments: {}`."
-        ])
-        
-        prompt = "\n".join(prompt_parts)
+        # Construct the simplified prompt
+        prompt = f"""--- TOOL SELECTION FOR ATOMIC TASK ---
+
+--- CURRENT TASK ---
+{current_task}
+
+{tools_section}
+
+{examples_section}
+
+--- QUESTION ---
+Which tool should be used and with what arguments to complete this specific task?
+
+--- INSTRUCTION ---
+Analyze the current task and select the most appropriate tool with correct arguments.
+The task is atomic and self-contained - simply choose the tool that directly accomplishes it."""
         
         return prompt
-    
-    def _build_history_section(self, state: "State") -> str:
-        """Build history section describing previous tool executions.
-        
-        Creates a concise summary of previous steps based on tool outputs and 
-        message history to provide critical context for the LLM about what
-        has already been accomplished.
-        
-        Args:
-            state: The current state containing tool outputs and message history.
-            
-        Returns:
-            Formatted history section string, or empty string if no history exists.
-        """
-        if not state.tool_outputs:
-            return ""
-        
-        history_lines = ["--- HISTORY OF PREVIOUS STEPS ---"]
-        step_number = 1
-        
-        # Process each tool execution in the order they appear in tool_outputs
-        for tool_name, tool_output in state.tool_outputs.items():
-            # Extract arguments from message history if available
-            tool_args = self._extract_tool_args_from_history(tool_name, state.message_history)
-            
-            # Format the tool arguments for display
-            args_display = self._format_args_for_display(tool_args)
-            
-            # Create result summary based on output type and content
-            result_summary = self._summarize_tool_result(tool_output)
-            
-            # Format the step description
-            step_description = f"Step {step_number}: Executed tool '{tool_name}'"
-            if args_display:
-                step_description += f" with arguments {args_display}"
-            step_description += f". Result: {result_summary}"
-            
-            history_lines.append(step_description)
-            step_number += 1
-        
-        return "\n".join(history_lines)
-    
-    def _extract_tool_args_from_history(self, tool_name: str, message_history: List[str]) -> dict:
-        """Extract tool arguments from message history for a specific tool.
-        
-        Searches through message history to find the arguments that were used
-        when executing the specified tool.
-        
-        Args:
-            tool_name: Name of the tool to find arguments for.
-            message_history: List of messages from execution history.
-            
-        Returns:
-            Dictionary of tool arguments, or empty dict if not found.
-        """
-        # Strategy: Look for argument extraction messages and correlate them with tool extraction messages
-        tool_found_index = -1
-        args_found_index = -1
-        
-        # First pass: find the tool extraction message
-        for i, message in enumerate(message_history):
-            if f"extracted tool from llm response: {tool_name}" in message.lower():
-                tool_found_index = i
-                break
-        
-        # Second pass: find the arguments extraction message near the tool message
-        if tool_found_index >= 0:
-            # Look for arguments message within a few lines after the tool message
-            for i in range(tool_found_index, min(tool_found_index + 5, len(message_history))):
-                message = message_history[i]
-                if "extracted arguments from llm response:" in message.lower():
-                    args_found_index = i
-                    break
-        
-        # If we found an arguments message, extract the dictionary
-        if args_found_index >= 0:
-            message = message_history[args_found_index]
-            try:
-                # Extract dictionary-like content from the message
-                dict_match = re.search(r'\{[^}]+\}', message)
-                if dict_match:
-                    dict_str = dict_match.group()
-                    try:
-                        # Try to parse as JSON first
-                        return json.loads(dict_str)
-                    except json.JSONDecodeError:
-                        # Try to parse Python dict format with single quotes
-                        dict_str = dict_str.replace("'", '"')
-                        return json.loads(dict_str)
-            except (json.JSONDecodeError, Exception):
-                pass
-        
-        # Fallback: look for any message with arguments and tool name
-        for message in message_history:
-            if tool_name in message.lower() and "arguments" in message.lower():
-                try:
-                    dict_match = re.search(r'\{[^}]+\}', message)
-                    if dict_match:
-                        dict_str = dict_match.group()
-                        try:
-                            return json.loads(dict_str)
-                        except json.JSONDecodeError:
-                            dict_str = dict_str.replace("'", '"')
-                            return json.loads(dict_str)
-                except (json.JSONDecodeError, Exception):
-                    pass
-        
-        return {}
-    
-    def _format_args_for_display(self, args: dict) -> str:
-        """Format tool arguments for display in history section.
-        
-        Args:
-            args: Dictionary of tool arguments.
-            
-        Returns:
-            Formatted string representation of arguments.
-        """
-        if not args:
-            return ""
-        
-        try:
-            return json.dumps(args, separators=(',', ': '))
-        except Exception:
-            return str(args)
-    
-    def _summarize_tool_result(self, tool_output: any) -> str:
-        """Create a concise summary of tool execution result.
-        
-        Args:
-            tool_output: The output from tool execution.
-            
-        Returns:
-            Concise summary string describing the result.
-        """
-        if tool_output is None:
-            return "No output"
-        
-        if isinstance(tool_output, str):
-            # Handle error cases
-            if tool_output.startswith("Error:"):
-                return f"Error occurred: {tool_output[6:].strip()[:50]}..."
-            
-            # For successful file operations
-            if "bytes to" in tool_output and "Successfully wrote" in tool_output:
-                # Extract file path and size for write operations
-                match = re.search(r'Successfully wrote (\d+) bytes to (.+)', tool_output)
-                if match:
-                    size, path = match.groups()
-                    return f"Successfully wrote {size} bytes to {path}"
-            
-            # For bash command outputs
-            if len(tool_output.strip()) > 0:
-                # Truncate long outputs but preserve key information
-                summary = tool_output.strip()[:100]
-                if len(tool_output.strip()) > 100:
-                    summary += "..."
-                return f"Output: {summary}"
-            else:
-                return "Command executed successfully (no output)"
-        
-        # For non-string outputs
-        return f"Result: {str(tool_output)[:50]}{'...' if len(str(tool_output)) > 50 else ''}"
     
     def _sanitize_llm_response(self, raw_response: str) -> str:
         """Sanitize raw LLM response before parsing to improve reliability.
@@ -802,76 +624,90 @@ Reasoning: Mathematical calculation is required, using the calculate tool.
         return None
     
     
-    def _perform_basic_reasoning(self, goal: str, state: "State") -> None:
-        """Perform basic fallback reasoning when LLM is unavailable.
+    def _perform_basic_reasoning(self, current_task: str, state: "State") -> None:
+        """Perform basic fallback reasoning for atomic subtasks when LLM is unavailable.
         
         This method implements simple hardcoded reasoning logic as a fallback
-        when the LLM service is unavailable or encounters errors.
-        
-        Current logic:
-        - Multi-step goal handling for file creation and display task
-        - Step 1: Create hello.txt file with 'Hello ONIKS!' content
-        - Step 2: Display file content using bash command
+        when the LLM service is unavailable or encounters errors. Since tasks
+        are now atomic, the logic is much simpler.
         
         Args:
-            goal: The high-level goal to analyze.
+            current_task: The current atomic subtask to analyze.
             state: The state object to update with reasoning results.
         """
-        # Handle non-string goals gracefully
-        if not isinstance(goal, str):
-            goal = str(goal) if goal is not None else ""
+        # Handle non-string tasks gracefully
+        if not isinstance(current_task, str):
+            current_task = str(current_task) if current_task is not None else ""
         
-        goal_lower = goal.lower()
+        task_lower = current_task.lower()
         
-        # Check if this is the multi-step demo goal
-        if ("create" in goal_lower and "hello.txt" in goal_lower and "hello oniks" in goal_lower and "display" in goal_lower):
-            # Check if file has been created yet
-            if not state.tool_outputs.get('write_file'):
-                # Step 1: Create the file
-                state.data['next_tool'] = 'write_file'
-                state.data['tool_args'] = {
-                    'file_path': 'hello.txt',
-                    'content': 'Hello ONIKS!'
-                }
-                state.data['file_path'] = 'hello.txt'
-                state.data['content'] = 'Hello ONIKS!'
-                
-                state.add_message(
-                    "Fallback reasoning: Step 1 - Creating hello.txt file with 'Hello ONIKS!' content"
-                )
-            elif not state.tool_outputs.get('execute_bash_command'):
-                # Step 2: Display file content
-                state.data['next_tool'] = 'execute_bash_command'
-                state.data['tool_args'] = {'command': 'cat hello.txt'}
-                state.data['command'] = 'cat hello.txt'
-                
-                state.add_message(
-                    "Fallback reasoning: Step 2 - Displaying hello.txt content with cat command"
-                )
-            else:
-                # Step 3: Task complete
-                state.data['next_tool'] = 'task_complete'
-                state.data['tool_args'] = {}
-                
-                state.add_message(
-                    "Fallback reasoning: Both steps completed, selecting task_complete tool"
-                )
-        
-        # Legacy support for simple file reading tasks
-        elif ("read" in goal_lower and "file" in goal_lower):
-            state.data['next_tool'] = 'read_file'
-            state.data['tool_args'] = {'file_path': 'task.txt'}
-            # Also set the file_path directly in state.data for ToolNode to use
-            state.data['file_path'] = 'task.txt'
+        # File creation tasks
+        if "create" in task_lower and "file" in task_lower:
+            import re
+            # Try to extract filename and content
+            filename_match = re.search(r"'([^']+\.\w+)'", current_task)
+            content_match = re.search(r"content '([^']+)'", current_task)
+            
+            filename = filename_match.group(1) if filename_match else "example.txt"
+            content = content_match.group(1) if content_match else "Example content"
+            
+            state.data['next_tool'] = 'write_file'
+            state.data['tool_args'] = {
+                'file_path': filename,
+                'content': content
+            }
+            state.data['file_path'] = filename
+            state.data['content'] = content
             
             state.add_message(
-                "Fallback reasoning result: Goal involves reading a file, "
-                "recommending read_file tool with task.txt"
+                f"Fallback reasoning: Creating file {filename} with content '{content}'"
             )
+        
+        # Display/show file content tasks
+        elif ("display" in task_lower or "show" in task_lower) and "content" in task_lower:
+            import re
+            # Try to extract filename
+            filename_match = re.search(r"'([^']+\.\w+)'", current_task)
+            filename = filename_match.group(1) if filename_match else "hello.txt"
+            
+            state.data['next_tool'] = 'execute_bash_command'
+            state.data['tool_args'] = {'command': f'cat {filename}'}
+            state.data['command'] = f'cat {filename}'
+            
+            state.add_message(
+                f"Fallback reasoning: Displaying content of {filename} using cat command"
+            )
+        
+        # List files tasks
+        elif "list" in task_lower and "file" in task_lower:
+            state.data['next_tool'] = 'list_files'
+            state.data['tool_args'] = {}
+            
+            state.add_message(
+                "Fallback reasoning: Listing files using list_files tool"
+            )
+        
+        # Read file tasks
+        elif "read" in task_lower and "file" in task_lower:
+            import re
+            filename_match = re.search(r"'([^']+\.\w+)'", current_task)
+            filename = filename_match.group(1) if filename_match else "task.txt"
+            
+            state.data['next_tool'] = 'read_file'
+            state.data['tool_args'] = {'file_path': filename}
+            state.data['file_path'] = filename
+            
+            state.add_message(
+                f"Fallback reasoning: Reading file {filename} using read_file tool"
+            )
+        
         else:
             state.add_message(
-                f"No specific fallback reasoning rule matched for goal: {goal}"
+                f"No specific fallback reasoning rule matched for task: {current_task}"
             )
+            # Default to task completion if we can't figure out what to do
+            state.data['next_tool'] = 'task_complete'
+            state.data['tool_args'] = {}
     
     def get_available_tools(self) -> List["Tool"]:
         """Get the list of available tools for this agent.
