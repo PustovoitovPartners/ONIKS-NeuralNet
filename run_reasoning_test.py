@@ -218,7 +218,7 @@ def main() -> None:
     
     # Create agents and nodes
     print("5. Creating agents and nodes...")
-    planner_agent = PlannerAgent("planner_agent", tools, llm_client)
+    planner_agent = PlannerAgent("planner_agent", llm_client, tools)
     reasoning_agent = ReasoningAgent("reasoning_agent", tools, llm_client)
     
     # Create tool nodes for each tool
