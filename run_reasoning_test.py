@@ -32,6 +32,7 @@ from typing import Set, List, Dict, Optional
 from oniks.tools.file_tools import ReadFileTool
 from oniks.tools.fs_tools import ListFilesTool, WriteFileTool
 from oniks.tools.shell_tools import ExecuteBashCommandTool
+from oniks.tools.core_tools import TaskCompleteTool
 from oniks.agents.reasoning_agent import ReasoningAgent
 from oniks.llm.client import OllamaClient, OllamaConnectionError
 
@@ -181,19 +182,18 @@ def main() -> None:
     print("2. Creating initial state with multi-step goal...")
     initial_state = State()
     initial_state.data['goal'] = "Create a file named 'hello.txt' with the content 'Hello ONIKS!', then display its content to the console."
-    initial_state.data['task_completed'] = False
     initial_state.add_message("Demo started with multi-step file creation and display goal")
     
     print(f"   Goal: {initial_state.data['goal']}")
-    print(f"   Task completion status: {initial_state.data['task_completed']}")
     
     # Create all required tools
     print("3. Creating tools...")
     list_files_tool = ListFilesTool()
     write_file_tool = WriteFileTool()
     execute_bash_tool = ExecuteBashCommandTool()
+    task_complete_tool = TaskCompleteTool()
     
-    tools = [list_files_tool, write_file_tool, execute_bash_tool]
+    tools = [list_files_tool, write_file_tool, execute_bash_tool, task_complete_tool]
     
     for tool in tools:
         print(f"   Created tool: {tool.name}")
@@ -223,8 +223,9 @@ def main() -> None:
     list_files_node = ToolNode("list_files", list_files_tool)
     write_file_node = ToolNode("write_file", write_file_tool)
     execute_bash_node = ToolNode("execute_bash_command", execute_bash_tool)
+    task_complete_node = ToolNode("task_complete", task_complete_tool)
     
-    tool_nodes = [list_files_node, write_file_node, execute_bash_node]
+    tool_nodes = [list_files_node, write_file_node, execute_bash_node, task_complete_node]
     
     print(f"   Created reasoning agent: {reasoning_agent.name}")
     for node in tool_nodes:
@@ -255,29 +256,37 @@ def main() -> None:
         condition=lambda state: state.data.get('next_tool') == 'execute_bash_command'
     )
     
+    graph.add_edge(
+        "reasoning_agent", 
+        "task_complete",
+        condition=lambda state: state.data.get('next_tool') == 'task_complete'
+    )
+    
     # Add edges from all tool nodes back to reasoning agent for next step analysis
-    # Each tool node can transition back to reasoning agent if task is not completed
+    # Each tool node can transition back to reasoning agent (except task_complete which is terminal)
     graph.add_edge(
         "list_files",
         "reasoning_agent",
-        condition=lambda state: not state.data.get('task_completed', False)
+        condition=lambda state: True  # Always return to reasoning agent
     )
     
     graph.add_edge(
         "write_file",
         "reasoning_agent",
-        condition=lambda state: not state.data.get('task_completed', False)
+        condition=lambda state: True  # Always return to reasoning agent
     )
     
     graph.add_edge(
         "execute_bash_command",
         "reasoning_agent",
-        condition=lambda state: not state.data.get('task_completed', False)
+        condition=lambda state: True  # Always return to reasoning agent
     )
+    
+    # Note: task_complete node has no outgoing edges - it's a terminal node
     
     print(f"   Graph nodes: {graph.get_node_count()}")
     print(f"   Graph edges: {graph.get_edge_count()}")
-    print("   Configured graph to terminate when task_completed = True")
+    print("   Configured graph to terminate when task_complete tool is selected")
     
     # Execute the graph
     print("7. Executing graph...")
@@ -332,7 +341,7 @@ def main() -> None:
         # Final verification check - ensure task completion
         print("\n🔍 Final Verification Check:")
         error_found = False
-        task_completed = final_state.data.get('task_completed', False)
+        task_completed = 'task_complete' in final_state.tool_outputs
         
         # Check for errors in tool outputs
         if final_state.tool_outputs:
@@ -346,7 +355,7 @@ def main() -> None:
         
         # Check if the task was completed successfully
         if task_completed:
-            print("   ✅ Task completion flag set successfully")
+            print("   ✅ Task completion tool executed successfully")
             
             # Verify the hello.txt file was created
             hello_file = project_root / "hello.txt"
@@ -376,7 +385,7 @@ def main() -> None:
                 print("   ❌ File content was not displayed via bash command")
                 error_found = True
         else:
-            print("   ❌ Task completion flag not set")
+            print("   ❌ Task completion tool was not executed")
             error_found = True
         
         if not final_state.tool_outputs:

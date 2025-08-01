@@ -8,6 +8,7 @@ from oniks.tools.base import Tool
 from oniks.tools.file_tools import ReadFileTool
 from oniks.tools.fs_tools import ListFilesTool, WriteFileTool
 from oniks.tools.shell_tools import ExecuteBashCommandTool
+from oniks.tools.core_tools import TaskCompleteTool
 
 __all__ = [
     "Tool",
@@ -15,4 +16,5 @@ __all__ = [
     "ListFilesTool",
     "WriteFileTool",
     "ExecuteBashCommandTool",
+    "TaskCompleteTool",
 ]

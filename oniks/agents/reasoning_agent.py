@@ -118,10 +118,7 @@ class ReasoningAgent(BaseAgent):
         
         result_state.add_message("Generated LLM prompt for goal analysis")
         
-        # Check for task completion before proceeding
-        if self._check_task_completion(result_state):
-            result_state.add_message("Task completion detected - no further action needed")
-            return result_state
+        # Removed old task completion check - now using formal task_complete tool
         
         # Invoke LLM to get reasoning results
         try:
@@ -144,8 +141,7 @@ class ReasoningAgent(BaseAgent):
             # Fall back to basic reasoning if LLM fails
             self._perform_basic_reasoning(goal, result_state)
         
-        # Check for task completion after reasoning
-        self._check_task_completion(result_state)
+        # Removed old task completion check - now using formal task_complete tool
         
         result_state.add_message(f"Reasoning agent {self.name} completed analysis")
         
@@ -226,9 +222,12 @@ Reasoning: Mathematical calculation is required, using the calculate tool.
             "--- QUESTION ---",
             "Which tool should be used and with what arguments to achieve the goal?\n",
             "--- INSTRUCTION ---",
-            "Your response MUST contain ONLY the \"Tool\", \"Arguments\" and \"Reasoning\" sections.",
-            "DO NOT ADD any other reasoning, questions or comments.",
-            "Follow the format from the examples."
+            "Your task is to choose the SINGLE NEXT logical step. Follow this algorithm precisely:",
+            "1.  **Analyze the `CURRENT GOAL`**.",
+            "2.  **Review the `HISTORY OF PREVIOUS STEPS`** to understand what has already been accomplished.",
+            "3.  **Compare the HISTORY to the GOAL**. Have all parts of the goal been met?",
+            "4.  **If the goal is NOT fully met**, choose the ONE tool from `AVAILABLE TOOLS` that completes the very next required step.",
+            "5.  **If ALL parts of the goal ARE met**, you MUST respond with the tool \"task_complete\" and empty arguments: `Arguments: {}`."
         ])
         
         prompt = "\n".join(prompt_parts)
@@ -802,33 +801,6 @@ Reasoning: Mathematical calculation is required, using the calculate tool.
         logger.debug("Stage 3: No bracket patterns matched")
         return None
     
-    def _check_task_completion(self, state: "State") -> bool:
-        """Check if the task has been completed based on goal and tool outputs.
-        
-        This method implements the completion logic:
-        - If goal contains 'выведи' (display) and tool_outputs from execute_bash_command
-          contains 'Hello ONIKS!', then task is completed.
-        
-        Args:
-            state: The current state to check for completion.
-            
-        Returns:
-            True if task is completed, False otherwise.
-        """
-        goal = state.data.get('goal', '')
-        
-        # Check if goal contains 'display'
-        if 'display' in goal.lower():
-            # Check if execute_bash_command has been executed and contains 'Hello ONIKS!'
-            if state.tool_outputs:
-                bash_output = state.tool_outputs.get('execute_bash_command', '')
-                if isinstance(bash_output, str) and 'Hello ONIKS!' in bash_output:
-                    state.data['task_completed'] = True
-                    state.add_message("Task completion detected: file created and content displayed")
-                    logger.info("Task marked as completed")
-                    return True
-        
-        return False
     
     def _perform_basic_reasoning(self, goal: str, state: "State") -> None:
         """Perform basic fallback reasoning when LLM is unavailable.
@@ -877,8 +849,12 @@ Reasoning: Mathematical calculation is required, using the calculate tool.
                     "Fallback reasoning: Step 2 - Displaying hello.txt content with cat command"
                 )
             else:
+                # Step 3: Task complete
+                state.data['next_tool'] = 'task_complete'
+                state.data['tool_args'] = {}
+                
                 state.add_message(
-                    "Fallback reasoning: Both steps completed, checking for task completion"
+                    "Fallback reasoning: Both steps completed, selecting task_complete tool"
                 )
         
         # Legacy support for simple file reading tasks
