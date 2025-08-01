@@ -19,6 +19,7 @@ Usage:
 """
 
 import sys
+import shutil
 from pathlib import Path
 
 # Add the project root to Python path for imports
@@ -30,7 +31,7 @@ from oniks.core.state import State
 from oniks.core.checkpoint import SQLiteCheckpointSaver
 from typing import Set, List, Dict, Optional
 from oniks.tools.file_tools import ReadFileTool
-from oniks.tools.fs_tools import ListFilesTool, WriteFileTool
+from oniks.tools.fs_tools import ListFilesTool, WriteFileTool, CreateDirectoryTool
 from oniks.tools.shell_tools import ExecuteBashCommandTool
 from oniks.tools.core_tools import TaskCompleteTool
 from oniks.agents.reasoning_agent import ReasoningAgent
@@ -158,12 +159,18 @@ class MultiStepGraph(Graph):
 
 
 def cleanup_demo_files() -> None:
-    """Clean up any existing demo files before starting."""
+    """Clean up any existing demo files and directories before starting."""
     demo_file_path = project_root / "hello.txt"
+    output_dir_path = project_root / "output"
     
     if demo_file_path.exists():
         demo_file_path.unlink()
         print(f"Cleaned up existing demo file: {demo_file_path}")
+    
+    if output_dir_path.exists():
+        # Remove the entire output directory and its contents
+        shutil.rmtree(output_dir_path)
+        print(f"Cleaned up existing output directory: {output_dir_path}")
 
 
 def main() -> None:
@@ -182,7 +189,7 @@ def main() -> None:
     # Create initial state with complex goal for hierarchical planning
     print("2. Creating initial state with complex goal for hierarchical planning...")
     initial_state = State()
-    initial_state.data['goal'] = "Create a directory named 'output', and inside it, create a file 'log.txt' with the text 'System test OK"
+    initial_state.data['goal'] = "Create a directory named 'output', and inside it, create a file 'log.txt' with the text 'System test OK'"
     initial_state.add_message("Demo started with complex goal that will be decomposed into atomic subtasks")
     
     print(f"   Goal: {initial_state.data['goal']}")
@@ -191,10 +198,11 @@ def main() -> None:
     print("3. Creating tools...")
     list_files_tool = ListFilesTool()
     write_file_tool = WriteFileTool()
+    create_directory_tool = CreateDirectoryTool()
     execute_bash_tool = ExecuteBashCommandTool()
     task_complete_tool = TaskCompleteTool()
     
-    tools = [list_files_tool, write_file_tool, execute_bash_tool, task_complete_tool]
+    tools = [list_files_tool, write_file_tool, create_directory_tool, execute_bash_tool, task_complete_tool]
     
     for tool in tools:
         print(f"   Created tool: {tool.name}")
@@ -224,10 +232,11 @@ def main() -> None:
     # Create tool nodes for each tool
     list_files_node = ToolNode("list_files", list_files_tool)
     write_file_node = ToolNode("write_file", write_file_tool)
+    create_directory_node = ToolNode("create_directory", create_directory_tool)
     execute_bash_node = ToolNode("execute_bash_command", execute_bash_tool)
     task_complete_node = ToolNode("task_complete", task_complete_tool)
     
-    tool_nodes = [list_files_node, write_file_node, execute_bash_node, task_complete_node]
+    tool_nodes = [list_files_node, write_file_node, create_directory_node, execute_bash_node, task_complete_node]
     
     print(f"   Created planner agent: {planner_agent.name}")
     print(f"   Created reasoning agent: {reasoning_agent.name}")
@@ -259,6 +268,12 @@ def main() -> None:
         "reasoning_agent", 
         "write_file",
         condition=lambda state: state.data.get('next_tool') == 'write_file'
+    )
+    
+    graph.add_edge(
+        "reasoning_agent", 
+        "create_directory",
+        condition=lambda state: state.data.get('next_tool') == 'create_directory'
     )
     
     graph.add_edge(
@@ -302,6 +317,12 @@ def main() -> None:
     
     graph.add_edge(
         "write_file",
+        "reasoning_agent",
+        condition=create_plan_progression_condition()
+    )
+    
+    graph.add_edge(
+        "create_directory",
         "reasoning_agent",
         condition=create_plan_progression_condition()
     )
@@ -387,32 +408,26 @@ def main() -> None:
         if task_completed:
             print("   ✅ Task completion tool executed successfully")
             
-            # Verify the hello.txt file was created
-            hello_file = project_root / "hello.txt"
-            if hello_file.exists():
-                with open(hello_file, 'r', encoding='utf-8') as f:
-                    content = f.read().strip()
-                if content == "Hello ONIKS!":
-                    print("   ✅ File hello.txt created with correct content")
+            # Verify the output directory was created
+            output_dir = project_root / "output"
+            if output_dir.exists() and output_dir.is_dir():
+                print("   ✅ Directory 'output' created successfully")
+                
+                # Verify the log.txt file was created inside the output directory
+                log_file = output_dir / "log.txt"
+                if log_file.exists():
+                    with open(log_file, 'r', encoding='utf-8') as f:
+                        content = f.read().strip()
+                    if content == "System test OK":
+                        print("   ✅ File 'output/log.txt' created with correct content")
+                    else:
+                        print(f"   ❌ File 'output/log.txt' has incorrect content: {content}")
+                        error_found = True
                 else:
-                    print(f"   ❌ File hello.txt has incorrect content: {content}")
+                    print("   ❌ File 'output/log.txt' was not created")
                     error_found = True
             else:
-                print("   ❌ File hello.txt was not created")
-                error_found = True
-                
-            # Check if file content was displayed in command output
-            bash_output_found = False
-            if final_state.tool_outputs:
-                for tool_name, output in final_state.tool_outputs.items():
-                    if tool_name == 'execute_bash_command' and isinstance(output, str):
-                        if 'Hello ONIKS!' in output:
-                            print("   ✅ File content displayed successfully via bash command")
-                            bash_output_found = True
-                            break
-            
-            if not bash_output_found:
-                print("   ❌ File content was not displayed via bash command")
+                print("   ❌ Directory 'output' was not created")
                 error_found = True
         else:
             print("   ❌ Task completion tool was not executed")
@@ -455,10 +470,13 @@ def main() -> None:
         checkpoint_file.unlink()
         print("   Removed checkpoint database")
     
-    # Keep the demo file for user inspection
-    hello_file = project_root / "hello.txt"
-    if hello_file.exists():
-        print(f"   Demo file preserved for inspection: {hello_file}")
+    # Keep the demo files for user inspection
+    output_dir = project_root / "output"
+    if output_dir.exists():
+        print(f"   Demo directory preserved for inspection: {output_dir}")
+        log_file = output_dir / "log.txt"
+        if log_file.exists():
+            print(f"   Demo file preserved for inspection: {log_file}")
 
 
 if __name__ == "__main__":

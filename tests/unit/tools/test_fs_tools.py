@@ -7,7 +7,7 @@ import stat
 from pathlib import Path
 from unittest.mock import patch, Mock
 
-from oniks.tools.fs_tools import ListFilesTool, WriteFileTool
+from oniks.tools.fs_tools import ListFilesTool, WriteFileTool, CreateDirectoryTool
 
 
 class TestListFilesToolInitialization:
@@ -985,7 +985,7 @@ class TestWriteFileToolInitialization:
         tool = WriteFileTool()
         
         assert tool.name == "write_file"
-        assert "Записывает или перезаписывает контент" in tool.description
+        assert "Writes or overwrites content to the specified file" in tool.description
         assert "file_path" in tool.description
         assert "content" in tool.description
         assert isinstance(tool.description, str)
@@ -1674,3 +1674,766 @@ class TestWriteFileToolSpecialScenarios:
                 assert "Successfully wrote" in result
                 assert target_file.exists()
                 assert target_file.read_text(encoding='utf-8') == content
+
+
+class TestCreateDirectoryToolInitialization:
+    """Test CreateDirectoryTool initialization."""
+    
+    def test_create_directory_tool_initialization(self):
+        """Test CreateDirectoryTool initialization sets correct attributes."""
+        tool = CreateDirectoryTool()
+        
+        assert tool.name == "create_directory"
+        assert "Creates a new directory at the specified path" in tool.description
+        assert "path" in tool.description
+        assert isinstance(tool.description, str)
+    
+    def test_create_directory_tool_string_representation(self):
+        """Test CreateDirectoryTool string representation."""
+        tool = CreateDirectoryTool()
+        
+        assert str(tool) == "CreateDirectoryTool(name='create_directory')"
+        assert repr(tool) == "CreateDirectoryTool(name='create_directory')"
+
+
+class TestCreateDirectoryToolExecution:
+    """Test CreateDirectoryTool execution with various scenarios."""
+    
+    @pytest.fixture
+    def temp_workspace(self):
+        """Create a temporary workspace for testing directory operations."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            yield Path(temp_dir)
+    
+    def test_create_directory_tool_create_single_directory(self, temp_workspace):
+        """Test successful creation of a single directory."""
+        tool = CreateDirectoryTool()
+        target_dir = temp_workspace / "new_directory"
+        
+        # Ensure directory doesn't exist initially
+        assert not target_dir.exists()
+        
+        result = tool.execute(path=str(target_dir))
+        
+        # Check success message
+        assert "Directory" in result
+        assert "created successfully" in result
+        assert str(target_dir) in result
+        
+        # Verify directory was created
+        assert target_dir.exists()
+        assert target_dir.is_dir()
+    
+    def test_create_directory_tool_create_nested_directory_structure(self, temp_workspace):
+        """Test successful creation of nested directory structure."""
+        tool = CreateDirectoryTool()
+        target_dir = temp_workspace / "level1" / "level2" / "level3" / "deep_dir"
+        
+        # Ensure parent directories don't exist initially
+        assert not target_dir.parent.exists()
+        assert not target_dir.exists()
+        
+        result = tool.execute(path=str(target_dir))
+        
+        # Check success message
+        assert "Directory" in result
+        assert "created successfully" in result
+        assert str(target_dir) in result
+        
+        # Verify all directories in the path were created
+        assert target_dir.exists()
+        assert target_dir.is_dir()
+        assert target_dir.parent.exists()
+        assert target_dir.parent.is_dir()
+        
+        # Verify the full nested structure
+        current = target_dir
+        level_count = 0
+        while current != temp_workspace:
+            assert current.exists()
+            assert current.is_dir()
+            level_count += 1
+            current = current.parent
+        
+        assert level_count == 4  # level1, level2, level3, deep_dir
+    
+    def test_create_directory_tool_existing_directory_exist_ok_true(self, temp_workspace):
+        """Test creation of already existing directory (exist_ok=True behavior)."""
+        tool = CreateDirectoryTool()
+        target_dir = temp_workspace / "existing_directory"
+        
+        # Create directory first
+        target_dir.mkdir()
+        assert target_dir.exists()
+        assert target_dir.is_dir()
+        
+        # Add a file to verify directory content is preserved
+        test_file = target_dir / "test_file.txt"
+        test_file.write_text("test content")
+        assert test_file.exists()
+        
+        # Try to create it again
+        result = tool.execute(path=str(target_dir))
+        
+        # Should succeed due to exist_ok=True
+        assert "Directory" in result
+        assert "created successfully" in result
+        assert str(target_dir) in result
+        
+        # Verify directory still exists and content is preserved
+        assert target_dir.exists()
+        assert target_dir.is_dir()
+        assert test_file.exists()
+        assert test_file.read_text() == "test content"
+    
+    def test_create_directory_tool_existing_nested_structure_exist_ok_true(self, temp_workspace):
+        """Test creation of partially existing nested directory structure."""
+        tool = CreateDirectoryTool()
+        
+        # Create partial structure
+        level1 = temp_workspace / "level1"
+        level2 = level1 / "level2"
+        level1.mkdir()
+        level2.mkdir()
+        
+        # Add content to existing directories
+        (level1 / "existing_file.txt").write_text("content1")
+        (level2 / "existing_file.txt").write_text("content2")
+        
+        # Try to create deeper structure
+        target_dir = temp_workspace / "level1" / "level2" / "level3" / "level4"
+        
+        result = tool.execute(path=str(target_dir))
+        
+        # Should succeed
+        assert "Directory" in result
+        assert "created successfully" in result
+        assert str(target_dir) in result
+        
+        # Verify all directories exist
+        assert target_dir.exists()
+        assert target_dir.is_dir()
+        
+        # Verify existing content is preserved
+        assert (level1 / "existing_file.txt").exists()
+        assert (level2 / "existing_file.txt").exists()
+        assert (level1 / "existing_file.txt").read_text() == "content1"
+        assert (level2 / "existing_file.txt").read_text() == "content2"
+    
+    def test_create_directory_tool_empty_directory_name(self, temp_workspace):
+        """Test creating directory with empty name (should use current path)."""
+        tool = CreateDirectoryTool()
+        target_dir = temp_workspace / ""  # This resolves to temp_workspace
+        
+        result = tool.execute(path=str(target_dir))
+        
+        # Should succeed as it's creating the already existing temp directory
+        assert "Directory" in result
+        assert "created successfully" in result
+    
+    def test_create_directory_tool_current_directory(self, temp_workspace):
+        """Test creating current directory (.)."""
+        tool = CreateDirectoryTool()
+        
+        # Change to temp workspace and create "."
+        original_cwd = os.getcwd()
+        try:
+            os.chdir(temp_workspace)
+            result = tool.execute(path=".")
+            
+            # Should succeed due to exist_ok=True
+            assert "Directory" in result
+            assert "created successfully" in result
+            
+        finally:
+            os.chdir(original_cwd)
+    
+    def test_create_directory_tool_parent_directory(self, temp_workspace):
+        """Test creating parent directory (..)."""
+        tool = CreateDirectoryTool()
+        sub_dir = temp_workspace / "subdir"
+        sub_dir.mkdir()
+        
+        # Change to subdirectory and create parent
+        original_cwd = os.getcwd()
+        try:
+            os.chdir(sub_dir)
+            result = tool.execute(path="..")
+            
+            # Should succeed due to exist_ok=True
+            assert "Directory" in result
+            assert "created successfully" in result
+            
+        finally:
+            os.chdir(original_cwd)
+    
+    def test_create_directory_tool_unicode_directory_names(self, temp_workspace):
+        """Test creating directories with Unicode characters in names."""
+        tool = CreateDirectoryTool()
+        
+        # Test various Unicode directory names
+        unicode_dirs = [
+            "папка",           # Russian
+            "文件夹",          # Chinese
+            "carpeta_señor",   # Spanish with ñ
+            "🚀_rocket_dir"    # Emoji
+        ]
+        
+        for dirname in unicode_dirs:
+            try:
+                target_dir = temp_workspace / dirname
+                result = tool.execute(path=str(target_dir))
+                
+                # Should handle Unicode directory names
+                assert "Directory" in result
+                assert "created successfully" in result
+                assert target_dir.exists()
+                assert target_dir.is_dir()
+                
+            except (UnicodeError, OSError):
+                # Skip if filesystem doesn't support unicode
+                pytest.skip(f"Filesystem doesn't support unicode directory name: {dirname}")
+    
+    def test_create_directory_tool_special_characters_in_names(self, temp_workspace):
+        """Test creating directories with special characters in names."""
+        tool = CreateDirectoryTool()
+        
+        # Test special characters in directory names (where supported)
+        special_dirs = [
+            "dir with spaces",
+            "dir-with-dashes",
+            "dir_with_underscores",
+            "dir.with.dots",
+            "dir(with)parentheses",
+            "dir[with]brackets"
+        ]
+        
+        for dirname in special_dirs:
+            try:
+                target_dir = temp_workspace / dirname
+                result = tool.execute(path=str(target_dir))
+                
+                assert "Directory" in result
+                assert "created successfully" in result
+                assert target_dir.exists()
+                assert target_dir.is_dir()
+                
+            except (OSError, ValueError):
+                # Skip directories that can't be created on this system
+                continue
+    
+    def test_create_directory_tool_deeply_nested_structure(self, temp_workspace):
+        """Test creating very deeply nested directory structure."""
+        tool = CreateDirectoryTool()
+        
+        # Create deeply nested path (20 levels)
+        nested_path = temp_workspace
+        for i in range(20):
+            nested_path = nested_path / f"level_{i:02d}"
+        
+        result = tool.execute(path=str(nested_path))
+        
+        assert "Directory" in result
+        assert "created successfully" in result
+        assert nested_path.exists()
+        assert nested_path.is_dir()
+        
+        # Verify all intermediate directories were created
+        current = nested_path
+        level_count = 0
+        while current != temp_workspace:
+            assert current.exists()
+            assert current.is_dir()
+            level_count += 1
+            current = current.parent
+        
+        assert level_count == 20
+    
+    def test_create_directory_tool_absolute_vs_relative_paths(self, temp_workspace):
+        """Test handling of absolute vs relative directory paths."""
+        tool = CreateDirectoryTool()
+        
+        # Test absolute path
+        abs_dir = temp_workspace / "absolute_test_dir"
+        result1 = tool.execute(path=str(abs_dir))
+        
+        assert "Directory" in result1
+        assert "created successfully" in result1
+        assert abs_dir.exists()
+        assert abs_dir.is_dir()
+        
+        # Test relative path (from current working directory)
+        original_cwd = os.getcwd()
+        try:
+            os.chdir(temp_workspace)
+            rel_dir = "relative_test_dir"
+            
+            result2 = tool.execute(path=rel_dir)
+            
+            assert "Directory" in result2
+            assert "created successfully" in result2
+            assert (temp_workspace / rel_dir).exists()
+            assert (temp_workspace / rel_dir).is_dir()
+            
+        finally:
+            os.chdir(original_cwd)
+
+
+class TestCreateDirectoryToolArgumentValidation:
+    """Test CreateDirectoryTool argument validation."""
+    
+    def test_create_directory_tool_missing_path_argument(self):
+        """Test execution without path argument."""
+        tool = CreateDirectoryTool()
+        
+        result = tool.execute()
+        
+        assert "Error: Missing required argument 'path'" in result
+    
+    def test_create_directory_tool_path_wrong_type(self):
+        """Test execution with non-string path argument."""
+        tool = CreateDirectoryTool()
+        
+        # Test with integer
+        result1 = tool.execute(path=123)
+        assert "Error: 'path' must be a string, got int" in result1
+        
+        # Test with list
+        result2 = tool.execute(path=["/some/path"])
+        assert "Error: 'path' must be a string, got list" in result2
+        
+        # Test with None
+        result3 = tool.execute(path=None)
+        assert "Error: 'path' must be a string, got NoneType" in result3
+        
+        # Test with dictionary
+        result4 = tool.execute(path={"path": "/some/dir"})
+        assert "Error: 'path' must be a string, got dict" in result4
+    
+    def test_create_directory_tool_empty_path(self):
+        """Test execution with empty path."""
+        tool = CreateDirectoryTool()
+        
+        # Test with empty string
+        result1 = tool.execute(path="")
+        assert "Error: 'path' cannot be empty" in result1
+        
+        # Test with whitespace only
+        result2 = tool.execute(path="   ")
+        assert "Error: 'path' cannot be empty" in result2
+        
+        # Test with tab and newline
+        result3 = tool.execute(path="\t\n")
+        assert "Error: 'path' cannot be empty" in result3
+    
+    def test_create_directory_tool_additional_arguments(self):
+        """Test that additional arguments are ignored gracefully."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            target_dir = Path(temp_dir) / "test_dir"
+            
+            tool = CreateDirectoryTool()
+            
+            result = tool.execute(
+                path=str(target_dir),
+                extra_arg="ignored",
+                another_arg=123,
+                yet_another={"key": "value"}
+            )
+            
+            # Should work normally and ignore extra arguments
+            assert "Directory" in result
+            assert "created successfully" in result
+            assert target_dir.exists()
+            assert target_dir.is_dir()
+
+
+class TestCreateDirectoryToolErrorHandling:
+    """Test CreateDirectoryTool error handling scenarios."""
+    
+    def test_create_directory_tool_invalid_path_characters(self):
+        """Test handling of invalid path characters."""
+        tool = CreateDirectoryTool()
+        
+        # Test with null character (invalid in most filesystems)
+        result1 = tool.execute(path="/tmp/test\x00dir")
+        assert "Error:" in result1
+        
+        # Results may vary by filesystem, but should handle gracefully
+        assert ("Invalid" in result1 or "Cannot create directory" in result1 or 
+                "Unexpected error" in result1 or "embedded null character" in result1)
+    
+    @pytest.mark.skipif(os.name == 'nt', reason="Unix-specific permission test")
+    def test_create_directory_tool_no_write_permission_parent(self):
+        """Test handling permission denied for parent directory (Unix-like systems only)."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            restricted_dir = temp_path / "restricted"
+            restricted_dir.mkdir()
+            
+            tool = CreateDirectoryTool()
+            target_dir = restricted_dir / "new_subdir"
+            
+            try:
+                # Remove write permission from parent directory
+                os.chmod(restricted_dir, 0o444)  # Read-only
+                
+                result = tool.execute(path=str(target_dir))
+                
+                assert "Error:" in result
+                assert "Permission denied" in result
+                
+                # Directory should not exist (use try/except to handle permission errors)
+                try:
+                    dir_exists = target_dir.exists()
+                    assert not dir_exists
+                except PermissionError:
+                    # If we can't even check if directory exists due to permissions, that's also valid
+                    pass
+                
+            finally:
+                # Restore permissions for cleanup
+                os.chmod(restricted_dir, 0o755)
+    
+    @pytest.mark.skipif(os.name == 'nt', reason="Unix-specific permission test")
+    def test_create_directory_tool_no_write_permission_nested(self):
+        """Test handling permission denied in nested directory creation."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            
+            # Create first level directory
+            level1 = temp_path / "level1"
+            level1.mkdir()
+            
+            # Create second level and restrict it
+            level2 = level1 / "level2"
+            level2.mkdir()
+            
+            tool = CreateDirectoryTool()
+            target_dir = level2 / "level3" / "level4"
+            
+            try:
+                # Remove write permission from level2 directory
+                os.chmod(level2, 0o444)  # Read-only
+                
+                result = tool.execute(path=str(target_dir))
+                
+                assert "Error:" in result
+                assert "Permission denied" in result
+                
+                # Target directory should not exist (use try/except to handle permission errors)
+                try:
+                    target_exists = target_dir.exists()
+                    assert not target_exists
+                    level3_exists = (level2 / "level3").exists()
+                    assert not level3_exists
+                except PermissionError:
+                    # If we can't even check if directories exist due to permissions, that's also valid
+                    pass
+                
+            finally:
+                # Restore permissions for cleanup
+                os.chmod(level2, 0o755)
+    
+    def test_create_directory_tool_file_exists_at_path(self):
+        """Test handling when a file already exists at the target path."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            
+            # Create a file at the target path
+            target_path = temp_path / "existing_file"
+            target_path.write_text("file content")
+            assert target_path.is_file()
+            
+            tool = CreateDirectoryTool()
+            
+            result = tool.execute(path=str(target_path))
+            
+            assert "Error:" in result
+            assert ("A file already exists at path" in result or 
+                    "Cannot create directory" in result or
+                    "File exists" in result)
+            
+            # Original file should still exist
+            assert target_path.exists()
+            assert target_path.is_file()
+            assert target_path.read_text() == "file content"
+    
+    def test_create_directory_tool_file_exists_in_path(self):
+        """Test handling when a file exists as part of the directory path."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            
+            # Create a file that blocks directory creation
+            blocking_file = temp_path / "blocking_file"
+            blocking_file.write_text("file content")
+            
+            # Try to create a directory that includes the file in its path
+            tool = CreateDirectoryTool()
+            target_dir = blocking_file / "subdir"  # This should fail
+            
+            result = tool.execute(path=str(target_dir))
+            
+            assert "Error:" in result
+            assert ("Cannot create directory" in result or 
+                    "Not a directory" in result or
+                    "Unexpected error" in result)
+            
+            # Original file should still exist
+            assert blocking_file.exists()
+            assert blocking_file.is_file()
+            assert not target_dir.exists()
+    
+    def test_create_directory_tool_path_resolution_error(self):
+        """Test handling errors during path resolution."""
+        tool = CreateDirectoryTool()
+        
+        with patch('pathlib.Path.resolve', side_effect=OSError("Path resolution failed")):
+            result = tool.execute(path="/some/path")
+            
+            assert "Error:" in result
+            assert "Cannot create directory" in result
+            assert "Path resolution failed" in result
+    
+    def test_create_directory_tool_mkdir_os_error(self):
+        """Test handling OSError during directory creation."""
+        tool = CreateDirectoryTool()
+        
+        with tempfile.TemporaryDirectory() as temp_dir:
+            target_dir = Path(temp_dir) / "test_dir"
+            
+            with patch('pathlib.Path.mkdir', side_effect=OSError("Disk full")):
+                result = tool.execute(path=str(target_dir))
+                
+                assert "Error:" in result
+                assert "Cannot create directory" in result
+                assert "Disk full" in result
+    
+    def test_create_directory_tool_unexpected_exception(self):
+        """Test handling of unexpected exceptions."""
+        tool = CreateDirectoryTool()
+        
+        with patch('pathlib.Path.resolve', side_effect=Exception("Unexpected error")):
+            result = tool.execute(path="/some/path")
+            
+            assert "Error:" in result
+            assert "Unexpected error when creating directory" in result
+            assert "Unexpected error" in result
+    
+    def test_create_directory_tool_very_long_path(self):
+        """Test handling of very long directory paths."""
+        tool = CreateDirectoryTool()
+        
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            
+            # Create a very long path that might exceed filesystem limits
+            long_name = "a" * 200  # 200 character directory name
+            nested_long_path = temp_path
+            
+            # Create multiple levels with long names
+            for i in range(5):
+                nested_long_path = nested_long_path / f"{long_name}_{i}"
+            
+            try:
+                result = tool.execute(path=str(nested_long_path))
+                
+                # Should either succeed or provide appropriate error message
+                if "Directory" in result and "created successfully" in result:
+                    assert nested_long_path.exists()
+                    assert nested_long_path.is_dir()
+                else:
+                    # Should provide meaningful error message
+                    assert "Error:" in result
+                    
+            except OSError:
+                # Some filesystems have stricter limits
+                pytest.skip("Filesystem doesn't support this path length")
+
+
+class TestCreateDirectoryToolSpecialScenarios:
+    """Test CreateDirectoryTool special scenarios and edge cases."""
+    
+    def test_create_directory_tool_symlink_handling(self):
+        """Test handling of symbolic links in directory paths."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            
+            # Create target directory
+            target_dir = temp_path / "target_dir"
+            target_dir.mkdir()
+            
+            try:
+                # Create symbolic link to directory
+                link_dir = temp_path / "link_dir"
+                os.symlink(target_dir, link_dir)
+                
+                tool = CreateDirectoryTool()
+                
+                # Try to create subdirectory through symbolic link
+                result = tool.execute(path=str(link_dir / "subdir"))
+                
+                # Should work through the symbolic link
+                assert "Directory" in result
+                assert "created successfully" in result
+                assert (link_dir / "subdir").exists()
+                assert (target_dir / "subdir").exists()  # Should exist in actual target too
+                
+            except (OSError, NotImplementedError):
+                # Skip on systems that don't support symlinks
+                pytest.skip("Symbolic links not supported on this system")
+    
+    def test_create_directory_tool_broken_symlink_in_path(self):
+        """Test handling of broken symbolic links in directory paths."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            
+            try:
+                # Create a broken symbolic link
+                broken_link = temp_path / "broken_link"
+                os.symlink("/nonexistent/path", broken_link)
+                
+                tool = CreateDirectoryTool()
+                
+                # Try to create directory using broken symlink in path
+                result = tool.execute(path=str(broken_link / "subdir"))
+                
+                # Should handle broken symlink gracefully
+                assert "Error:" in result
+                assert ("Cannot create directory" in result or 
+                        "No such file or directory" in result or
+                        "Unexpected error" in result)
+                
+            except (OSError, NotImplementedError):
+                # Skip on systems that don't support symlinks
+                pytest.skip("Symbolic links not supported on this system")
+    
+    def test_create_directory_tool_path_traversal_protection(self):
+        """Test that path traversal attempts are handled properly."""
+        tool = CreateDirectoryTool()
+        
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            
+            # Try various path traversal patterns
+            traversal_paths = [
+                str(temp_path / ".." / "outside_dir"),
+                str(temp_path / "normal" / ".." / ".." / "outside_dir"),
+                str(temp_path / "." / ".." / "outside_dir")
+            ]
+            
+            for path_str in traversal_paths:
+                result = tool.execute(path=path_str)
+                
+                # Should either succeed (if path resolves to valid location)
+                # or fail gracefully with appropriate error
+                assert isinstance(result, str)
+                
+                if "Error:" in result:
+                    # Error is acceptable for security reasons
+                    continue
+                elif "Directory" in result and "created successfully" in result:
+                    # If it succeeds, verify the resolved path is reasonable
+                    resolved_path = Path(path_str).resolve()
+                    assert resolved_path.exists()
+                    assert resolved_path.is_dir()
+    
+    def test_create_directory_tool_case_sensitivity(self):
+        """Test case sensitivity behavior in directory names."""
+        tool = CreateDirectoryTool()
+        
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            
+            # Create directory with lowercase name
+            lowercase_dir = temp_path / "testdir"
+            result1 = tool.execute(path=str(lowercase_dir))
+            
+            assert "Directory" in result1
+            assert "created successfully" in result1
+            assert lowercase_dir.exists()
+            
+            # Try to create directory with uppercase name
+            uppercase_dir = temp_path / "TESTDIR"
+            result2 = tool.execute(path=str(uppercase_dir))
+            
+            assert "Directory" in result2
+            assert "created successfully" in result2
+            
+            # Behavior depends on filesystem case sensitivity
+            if os.name == 'nt':  # Windows is typically case-insensitive
+                # May be the same directory
+                pass
+            else:  # Unix-like systems are typically case-sensitive
+                # Should be different directories
+                assert uppercase_dir.exists()
+                assert lowercase_dir.exists()
+    
+    def test_create_directory_tool_concurrent_access_simulation(self):
+        """Test handling of concurrent directory creation scenarios."""
+        tool = CreateDirectoryTool()
+        
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            target_dir = temp_path / "concurrent_dir"
+            
+            # Simulate race condition where another process creates the directory
+            # between our existence check and creation attempt
+            original_mkdir = Path.mkdir
+            mkdir_called = False
+            
+            def mock_mkdir(self, mode=0o777, parents=False, exist_ok=False):
+                nonlocal mkdir_called
+                if not mkdir_called and self == target_dir:
+                    # First call - simulate another process creating it
+                    mkdir_called = True
+                    # Actually create the directory
+                    original_mkdir(self, mode, parents, exist_ok)
+                    if not exist_ok:
+                        raise FileExistsError("Directory already exists")
+                return original_mkdir(self, mode, parents, exist_ok)
+            
+            with patch('pathlib.Path.mkdir', mock_mkdir):
+                result = tool.execute(path=str(target_dir))
+                
+                # Should handle gracefully due to exist_ok=True in implementation
+                assert "Directory" in result
+                assert "created successfully" in result
+                assert target_dir.exists()
+                assert target_dir.is_dir()
+    
+    def test_create_directory_tool_performance_large_nested_structure(self):
+        """Test performance with large nested directory structures."""
+        tool = CreateDirectoryTool()
+        
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            
+            # Create a moderately deep structure (50 levels)
+            nested_path = temp_path
+            for i in range(50):
+                nested_path = nested_path / f"level_{i:02d}"
+            
+            import time
+            start_time = time.time()
+            result = tool.execute(path=str(nested_path))
+            end_time = time.time()
+            
+            # Should complete in reasonable time (< 2 seconds)
+            assert end_time - start_time < 2.0
+            
+            # Should succeed
+            assert "Directory" in result
+            assert "created successfully" in result
+            assert nested_path.exists()
+            assert nested_path.is_dir()
+            
+            # Verify all intermediate directories were created
+            current = nested_path
+            level_count = 0
+            while current != temp_path:
+                assert current.exists()
+                assert current.is_dir()
+                level_count += 1
+                current = current.parent
+            
+            assert level_count == 50

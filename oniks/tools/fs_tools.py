@@ -351,3 +351,83 @@ class WriteFileTool(Tool):
             return f"Error: Invalid file path '{file_path}': {str(e)}"
         except Exception as e:
             return f"Error: Unexpected error when writing to file '{file_path}': {str(e)}"
+
+
+class CreateDirectoryTool(Tool):
+    """Tool for creating directories with support for nested directory creation.
+    
+    This tool provides the ability to create directories, including all necessary
+    parent directories if they don't exist. It handles various error conditions
+    gracefully and provides detailed feedback about the operation results.
+    
+    The tool takes a 'path' argument specifying the directory to create and uses
+    the parents=True and exist_ok=True options to handle nested directory creation
+    and avoid errors when the directory already exists.
+    
+    Example:
+        >>> tool = CreateDirectoryTool()
+        >>> result = tool.execute(path="/my/project/nested/directory")
+        >>> print(result)
+        Directory '/my/project/nested/directory' created successfully.
+        
+        >>> result = tool.execute(path="/invalid/path")
+        >>> print(result)
+        Error: Permission denied when creating directory '/invalid/path'
+    """
+    
+    def __init__(self) -> None:
+        """Initialize the CreateDirectoryTool with name and description."""
+        super().__init__()
+        self.name = "create_directory"
+        self.description = (
+            "Creates a new directory at the specified path. "
+            "Arguments: {'path': 'str'}"
+        )
+    
+    def execute(self, **kwargs: Any) -> str:
+        """Create a directory at the specified path with nested directory support.
+        
+        Args:
+            **kwargs: Must contain 'path' key with string value pointing to the
+                     directory path to create.
+        
+        Returns:
+            String containing success message with the created directory path,
+            or an error message if the operation fails.
+        
+        Raises:
+            KeyError: If 'path' argument is not provided.
+            TypeError: If arguments have incorrect types.
+        """
+        # Validate required argument
+        if 'path' not in kwargs:
+            return "Error: Missing required argument 'path'"
+        
+        directory_path = kwargs['path']
+        
+        # Validate argument type
+        if not isinstance(directory_path, str):
+            return f"Error: 'path' must be a string, got {type(directory_path).__name__}"
+        
+        # Validate path is not empty
+        if not directory_path.strip():
+            return "Error: 'path' cannot be empty"
+        
+        try:
+            # Convert to Path object for easier manipulation
+            path_obj = Path(directory_path).resolve()
+            
+            # Create the directory with parents=True and exist_ok=True
+            path_obj.mkdir(parents=True, exist_ok=True)
+            
+            return f"Directory '{path_obj}' created successfully."
+            
+        except PermissionError:
+            return f"Error: Permission denied when creating directory '{directory_path}'"
+        except FileExistsError:
+            # This shouldn't happen with exist_ok=True, but included for completeness
+            return f"Error: A file already exists at path '{directory_path}'"
+        except OSError as e:
+            return f"Error: Cannot create directory '{directory_path}': {str(e)}"
+        except Exception as e:
+            return f"Error: Unexpected error when creating directory '{directory_path}': {str(e)}"
