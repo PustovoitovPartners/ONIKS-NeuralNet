@@ -113,7 +113,7 @@ class ReasoningAgent(BaseAgent):
             return result_state
         
         # Generate structured prompt for LLM integration
-        generated_prompt = self._generate_llm_prompt(goal)
+        generated_prompt = self._generate_llm_prompt(goal, result_state)
         result_state.data['last_prompt'] = generated_prompt
         
         result_state.add_message("Generated LLM prompt for goal analysis")
@@ -151,15 +151,19 @@ class ReasoningAgent(BaseAgent):
         
         return result_state
     
-    def _generate_llm_prompt(self, goal: str) -> str:
+    def _generate_llm_prompt(self, goal: str, state: "State") -> str:
         """Generate an optimized structured prompt for weak LLM models.
         
         Creates a comprehensive prompt with clear section dividers and instruction
         at the end to leverage recency bias. Optimized for llama3:8b and other
         small models while maintaining tool selection functionality.
         
+        Includes history of previous steps to provide critical context about
+        what tools have already been executed and their results.
+        
         Args:
             goal: The high-level goal extracted from the state.
+            state: The current state containing tool outputs and message history.
             
         Returns:
             Formatted prompt string optimized for weak LLMs with clear sections.
@@ -173,6 +177,9 @@ class ReasoningAgent(BaseAgent):
             for tool in self.tools:
                 description = getattr(tool, 'description', None) or "[Description not provided]"
                 tools_section += f"- {tool.name}: {description}\n"
+        
+        # Build history section with previous steps
+        history_section = self._build_history_section(state)
         
         # Build examples section with clear dividers
         examples_section = """--- CORRECT FORMAT EXAMPLES ---
@@ -203,24 +210,193 @@ Reasoning: Mathematical calculation is required, using the calculate tool.
 - Include all required parameters for the selected tool"""
         
         # Construct the complete prompt with clear sections
-        prompt = f"""--- GOAL ANALYSIS AND TOOL SELECTION ---
-
---- CURRENT GOAL ---
-{goal}
-
-{tools_section}
-
-{examples_section}
-
---- QUESTION ---
-Which tool should be used and with what arguments to achieve the goal?
-
---- INSTRUCTION ---
-Your response MUST contain ONLY the "Tool", "Arguments" and "Reasoning" sections.
-DO NOT ADD any other reasoning, questions or comments.
-Follow the format from the examples."""
+        prompt_parts = [
+            "--- GOAL ANALYSIS AND TOOL SELECTION ---\n",
+            "--- CURRENT GOAL ---",
+            f"{goal}\n",
+            f"{tools_section}\n"
+        ]
+        
+        # Add history section if there are previous steps
+        if history_section:
+            prompt_parts.extend([f"{history_section}\n"])
+        
+        prompt_parts.extend([
+            f"{examples_section}\n",
+            "--- QUESTION ---",
+            "Which tool should be used and with what arguments to achieve the goal?\n",
+            "--- INSTRUCTION ---",
+            "Your response MUST contain ONLY the \"Tool\", \"Arguments\" and \"Reasoning\" sections.",
+            "DO NOT ADD any other reasoning, questions or comments.",
+            "Follow the format from the examples."
+        ])
+        
+        prompt = "\n".join(prompt_parts)
         
         return prompt
+    
+    def _build_history_section(self, state: "State") -> str:
+        """Build history section describing previous tool executions.
+        
+        Creates a concise summary of previous steps based on tool outputs and 
+        message history to provide critical context for the LLM about what
+        has already been accomplished.
+        
+        Args:
+            state: The current state containing tool outputs and message history.
+            
+        Returns:
+            Formatted history section string, or empty string if no history exists.
+        """
+        if not state.tool_outputs:
+            return ""
+        
+        history_lines = ["--- HISTORY OF PREVIOUS STEPS ---"]
+        step_number = 1
+        
+        # Process each tool execution in the order they appear in tool_outputs
+        for tool_name, tool_output in state.tool_outputs.items():
+            # Extract arguments from message history if available
+            tool_args = self._extract_tool_args_from_history(tool_name, state.message_history)
+            
+            # Format the tool arguments for display
+            args_display = self._format_args_for_display(tool_args)
+            
+            # Create result summary based on output type and content
+            result_summary = self._summarize_tool_result(tool_output)
+            
+            # Format the step description
+            step_description = f"Step {step_number}: Executed tool '{tool_name}'"
+            if args_display:
+                step_description += f" with arguments {args_display}"
+            step_description += f". Result: {result_summary}"
+            
+            history_lines.append(step_description)
+            step_number += 1
+        
+        return "\n".join(history_lines)
+    
+    def _extract_tool_args_from_history(self, tool_name: str, message_history: List[str]) -> dict:
+        """Extract tool arguments from message history for a specific tool.
+        
+        Searches through message history to find the arguments that were used
+        when executing the specified tool.
+        
+        Args:
+            tool_name: Name of the tool to find arguments for.
+            message_history: List of messages from execution history.
+            
+        Returns:
+            Dictionary of tool arguments, or empty dict if not found.
+        """
+        # Strategy: Look for argument extraction messages and correlate them with tool extraction messages
+        tool_found_index = -1
+        args_found_index = -1
+        
+        # First pass: find the tool extraction message
+        for i, message in enumerate(message_history):
+            if f"extracted tool from llm response: {tool_name}" in message.lower():
+                tool_found_index = i
+                break
+        
+        # Second pass: find the arguments extraction message near the tool message
+        if tool_found_index >= 0:
+            # Look for arguments message within a few lines after the tool message
+            for i in range(tool_found_index, min(tool_found_index + 5, len(message_history))):
+                message = message_history[i]
+                if "extracted arguments from llm response:" in message.lower():
+                    args_found_index = i
+                    break
+        
+        # If we found an arguments message, extract the dictionary
+        if args_found_index >= 0:
+            message = message_history[args_found_index]
+            try:
+                # Extract dictionary-like content from the message
+                dict_match = re.search(r'\{[^}]+\}', message)
+                if dict_match:
+                    dict_str = dict_match.group()
+                    try:
+                        # Try to parse as JSON first
+                        return json.loads(dict_str)
+                    except json.JSONDecodeError:
+                        # Try to parse Python dict format with single quotes
+                        dict_str = dict_str.replace("'", '"')
+                        return json.loads(dict_str)
+            except (json.JSONDecodeError, Exception):
+                pass
+        
+        # Fallback: look for any message with arguments and tool name
+        for message in message_history:
+            if tool_name in message.lower() and "arguments" in message.lower():
+                try:
+                    dict_match = re.search(r'\{[^}]+\}', message)
+                    if dict_match:
+                        dict_str = dict_match.group()
+                        try:
+                            return json.loads(dict_str)
+                        except json.JSONDecodeError:
+                            dict_str = dict_str.replace("'", '"')
+                            return json.loads(dict_str)
+                except (json.JSONDecodeError, Exception):
+                    pass
+        
+        return {}
+    
+    def _format_args_for_display(self, args: dict) -> str:
+        """Format tool arguments for display in history section.
+        
+        Args:
+            args: Dictionary of tool arguments.
+            
+        Returns:
+            Formatted string representation of arguments.
+        """
+        if not args:
+            return ""
+        
+        try:
+            return json.dumps(args, separators=(',', ': '))
+        except Exception:
+            return str(args)
+    
+    def _summarize_tool_result(self, tool_output: any) -> str:
+        """Create a concise summary of tool execution result.
+        
+        Args:
+            tool_output: The output from tool execution.
+            
+        Returns:
+            Concise summary string describing the result.
+        """
+        if tool_output is None:
+            return "No output"
+        
+        if isinstance(tool_output, str):
+            # Handle error cases
+            if tool_output.startswith("Error:"):
+                return f"Error occurred: {tool_output[6:].strip()[:50]}..."
+            
+            # For successful file operations
+            if "bytes to" in tool_output and "Successfully wrote" in tool_output:
+                # Extract file path and size for write operations
+                match = re.search(r'Successfully wrote (\d+) bytes to (.+)', tool_output)
+                if match:
+                    size, path = match.groups()
+                    return f"Successfully wrote {size} bytes to {path}"
+            
+            # For bash command outputs
+            if len(tool_output.strip()) > 0:
+                # Truncate long outputs but preserve key information
+                summary = tool_output.strip()[:100]
+                if len(tool_output.strip()) > 100:
+                    summary += "..."
+                return f"Output: {summary}"
+            else:
+                return "Command executed successfully (no output)"
+        
+        # For non-string outputs
+        return f"Result: {str(tool_output)[:50]}{'...' if len(str(tool_output)) > 50 else ''}"
     
     def _sanitize_llm_response(self, raw_response: str) -> str:
         """Sanitize raw LLM response before parsing to improve reliability.
