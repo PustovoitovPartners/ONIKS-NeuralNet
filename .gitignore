@@ -201,3 +201,33 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# ONIKS specific
+*.db
+*.sqlite
+demo_checkpoints.db
+checkpoints.db
+
+# Demo output files (keep these for inspection but don't commit)
+hello.txt
+demo_output/
+
+# Temporary test files
+task.txt
+example.txt
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
