@@ -115,7 +115,18 @@ class ReasoningAgent(BaseAgent):
         current_task = plan[0]
         result_state.add_message(f"Current subtask: {current_task}")
         
-        # Check if this is the final confirmation task
+        # Check if this is a function call string (new tool-based format)
+        if self._is_function_call_format(current_task):
+            result_state.add_message("Detected function call format, parsing directly")
+            success = self._parse_function_call(current_task, result_state)
+            if success:
+                result_state.add_message(f"Successfully parsed function call: {current_task}")
+                return result_state
+            else:
+                result_state.add_message(f"Failed to parse function call: {current_task}, falling back to LLM analysis")
+                # Continue with LLM analysis as fallback
+        
+        # Check if this is the final confirmation task (legacy format)
         if "confirm that all previous steps are complete" in current_task.lower():
             result_state.data['next_tool'] = 'task_complete'
             result_state.data['tool_args'] = {}
@@ -747,3 +758,209 @@ The task is atomic and self-contained - simply choose the tool that directly acc
         original_length = len(self.tools)
         self.tools = [tool for tool in self.tools if tool.name != tool_name]
         return len(self.tools) < original_length
+    
+    def _is_function_call_format(self, task: str) -> bool:
+        """Check if a task string is in function call format.
+        
+        Detects if the task follows the new tool-based format like:
+        "write_file(file_path='hello.txt', content='Hello World')"
+        instead of descriptive format like:
+        "Create a file named 'hello.txt' with the content 'Hello World'"
+        
+        Args:
+            task: The task string to check.
+            
+        Returns:
+            True if the task is in function call format, False otherwise.
+        """
+        if not isinstance(task, str) or not task.strip():
+            return False
+        
+        task = task.strip()
+        
+        # Check if it matches basic function call pattern: name(...)
+        import re
+        match = re.match(r'^(\w+)\s*\(.*\)$', task)
+        if not match:
+            return False
+        
+        tool_name = match.group(1)
+        
+        # Check if the tool name is one of our available tools
+        available_tool_names = [tool.name for tool in self.tools]
+        
+        # Always allow task_complete as it's a standard completion tool
+        if tool_name == 'task_complete':
+            return True
+            
+        return tool_name in available_tool_names
+    
+    def _parse_function_call(self, function_call: str, state: "State") -> bool:
+        """Parse a function call string to extract tool name and arguments.
+        
+        Parses function call strings like:
+        "write_file(file_path='hello.txt', content='Hello World')"
+        
+        And sets the appropriate state variables:
+        - state.data['next_tool'] = 'write_file'
+        - state.data['tool_args'] = {'file_path': 'hello.txt', 'content': 'Hello World'}
+        - state.data[key] = value for each argument
+        
+        Args:
+            function_call: The function call string to parse.
+            state: The state object to update with parsed results.
+            
+        Returns:
+            True if parsing was successful, False otherwise.
+        """
+        if not isinstance(function_call, str) or not function_call.strip():
+            logger.warning("Invalid function call string provided")
+            return False
+        
+        function_call = function_call.strip()
+        
+        try:
+            # Extract tool name using regex
+            import re
+            match = re.match(r'^(\w+)\s*\((.*)\)$', function_call)
+            if not match:
+                logger.warning(f"Function call does not match expected pattern: {function_call}")
+                return False
+            
+            tool_name = match.group(1)
+            args_str = match.group(2).strip()
+            
+            # Set the tool name
+            state.data['next_tool'] = tool_name
+            state.add_message(f"Extracted tool name: {tool_name}")
+            
+            # Parse arguments if any
+            if args_str:
+                args_dict = self._parse_function_arguments(args_str)
+                if args_dict is not None:
+                    state.data['tool_args'] = args_dict
+                    
+                    # Set individual argument keys in state.data for ToolNode compatibility
+                    for key, value in args_dict.items():
+                        state.data[key] = value
+                    
+                    state.add_message(f"Extracted arguments: {args_dict}")
+                else:
+                    logger.warning(f"Failed to parse arguments: {args_str}")
+                    return False
+            else:
+                # No arguments
+                state.data['tool_args'] = {}
+                state.add_message("No arguments found in function call")
+            
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error parsing function call '{function_call}': {e}")
+            return False
+    
+    def _parse_function_arguments(self, args_str: str) -> Optional[dict]:
+        """Parse function call arguments string into a dictionary.
+        
+        Handles various argument formats:
+        - Keyword arguments: file_path='hello.txt', content='Hello World'
+        - Mixed quotes: file_path="hello.txt", content='Hello World'
+        - No arguments: (empty string)
+        
+        Args:
+            args_str: The arguments string to parse (content inside parentheses).
+            
+        Returns:
+            Dictionary of argument name-value pairs, or None if parsing fails.
+        """
+        if not args_str.strip():
+            return {}
+        
+        try:
+            # Method 1: Try using AST to parse as function call arguments
+            # Create a dummy function call and parse it
+            dummy_call = f"dummy_func({args_str})"
+            import ast
+            
+            try:
+                parsed = ast.parse(dummy_call, mode='eval')
+                if isinstance(parsed.body, ast.Call):
+                    args_dict = {}
+                    
+                    # Handle keyword arguments
+                    for keyword in parsed.body.keywords:
+                        if keyword.arg:  # keyword.arg is the parameter name
+                            # Extract the value
+                            if isinstance(keyword.value, ast.Constant):
+                                args_dict[keyword.arg] = keyword.value.value
+                            elif isinstance(keyword.value, ast.Str):  # Python < 3.8 compatibility
+                                args_dict[keyword.arg] = keyword.value.s
+                            elif isinstance(keyword.value, ast.Num):  # Python < 3.8 compatibility
+                                args_dict[keyword.arg] = keyword.value.n
+                            else:
+                                # For more complex expressions, convert back to string
+                                args_dict[keyword.arg] = ast.unparse(keyword.value)
+                    
+                    # Handle positional arguments (if any)
+                    for i, arg in enumerate(parsed.body.args):
+                        if isinstance(arg, ast.Constant):
+                            args_dict[f'arg_{i}'] = arg.value
+                        elif isinstance(arg, ast.Str):  # Python < 3.8 compatibility
+                            args_dict[f'arg_{i}'] = arg.s
+                        elif isinstance(arg, ast.Num):  # Python < 3.8 compatibility
+                            args_dict[f'arg_{i}'] = arg.n
+                        else:
+                            # For more complex expressions, convert back to string
+                            args_dict[f'arg_{i}'] = ast.unparse(arg)
+                    
+                    logger.debug(f"AST parsing successful: {args_dict}")
+                    return args_dict
+                    
+            except (SyntaxError, ValueError, AttributeError) as e:
+                logger.debug(f"AST parsing failed: {e}, trying regex method")
+        
+        except Exception as e:
+            logger.debug(f"AST method failed: {e}, trying regex method")
+        
+        # Method 2: Fallback to regex parsing for keyword arguments
+        try:
+            import re
+            args_dict = {}
+            
+            # Pattern to match key=value pairs with quoted values
+            # Handles both single and double quotes
+            pattern = r"(\w+)\s*=\s*(['\"])([^'\"]*)\2"
+            matches = re.findall(pattern, args_str)
+            
+            for match in matches:
+                key = match[0]
+                value = match[2]  # The captured content inside quotes
+                args_dict[key] = value
+            
+            if args_dict:
+                logger.debug(f"Regex parsing successful: {args_dict}")
+                return args_dict
+            else:
+                logger.warning(f"No keyword arguments found in: {args_str}")
+                
+        except Exception as e:
+            logger.warning(f"Regex parsing failed: {e}")
+        
+        # Method 3: Last resort - try to extract simple values
+        try:
+            # If it's just a single quoted string, treat it as a single argument
+            import re
+            single_value_match = re.match(r"^['\"]([^'\"]*)['\"]$", args_str.strip())
+            if single_value_match:
+                value = single_value_match.group(1)
+                # Try to guess the parameter name based on common patterns
+                if '.' in value or '/' in value or '\\' in value:
+                    return {'file_path': value}
+                else:
+                    return {'value': value}
+                    
+        except Exception as e:
+            logger.warning(f"Simple value parsing failed: {e}")
+        
+        logger.error(f"All parsing methods failed for arguments: {args_str}")
+        return None
