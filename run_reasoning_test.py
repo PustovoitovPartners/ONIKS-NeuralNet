@@ -1,18 +1,18 @@
 #!/usr/bin/env python3
-"""Multi-step demonstration script for the ReasoningAgent system.
+"""Multi-step demonstration script for the hierarchical PlannerAgent + ReasoningAgent system.
 
-This script demonstrates a comprehensive multi-step workflow where the ReasoningAgent
-serves as the central thinking node, coordinating with multiple tool nodes to
-accomplish a complex task requiring file creation and command execution.
+This script demonstrates a comprehensive multi-step workflow with hierarchical task management
+where the PlannerAgent decomposes complex goals into atomic subtasks, and the ReasoningAgent
+executes each subtask by coordinating with multiple tool nodes.
 
 The demonstration workflow:
-1. ReasoningAgent analyzes the goal: create hello.txt with 'Hello ONIKS!' and display it
-2. Agent selects write_file tool to create the file
-3. Returns to ReasoningAgent for next step analysis
-4. Agent selects execute_bash_command tool to display file contents
-5. Returns to ReasoningAgent for completion check
-6. Agent detects task completion and sets completion flag
-7. Graph terminates when task is completed
+1. PlannerAgent analyzes the goal and creates a structured plan with atomic subtasks
+2. ReasoningAgent takes the first subtask from the plan and selects appropriate tools
+3. Tool nodes execute the selected operations (file creation, command execution, etc.)
+4. Returns to ReasoningAgent for the next subtask in the plan
+5. Process continues until all subtasks are completed
+6. Final confirmation task triggers task_complete tool
+7. Graph terminates when all planned tasks are completed
 
 Usage:
     python run_reasoning_test.py
@@ -34,6 +34,7 @@ from oniks.tools.fs_tools import ListFilesTool, WriteFileTool
 from oniks.tools.shell_tools import ExecuteBashCommandTool
 from oniks.tools.core_tools import TaskCompleteTool
 from oniks.agents.reasoning_agent import ReasoningAgent
+from oniks.agents.planner_agent import PlannerAgent
 from oniks.llm.client import OllamaClient, OllamaConnectionError
 
 
@@ -167,7 +168,7 @@ def cleanup_demo_files() -> None:
 
 def main() -> None:
     """Main multi-step demonstration function."""
-    print("=== ONIKS Multi-Step ReasoningAgent Demonstration ===\n")
+    print("=== ONIKS Hierarchical PlannerAgent + ReasoningAgent Demonstration ===\n")
     
     # Clean up any existing demo files
     cleanup_demo_files()
@@ -175,14 +176,14 @@ def main() -> None:
     # Initialize multi-step graph with checkpoint saver
     print("1. Initializing multi-step graph and checkpoint saver...")
     checkpointer = SQLiteCheckpointSaver("demo_checkpoints.db")
-    # Allow the reasoning agent to be re-executed for multi-step workflows
-    graph = MultiStepGraph(checkpointer=checkpointer, reusable_nodes={"reasoning_agent"})
+    # Allow both planner and reasoning agents to be re-executed for multi-step workflows
+    graph = MultiStepGraph(checkpointer=checkpointer, reusable_nodes={"planner_agent", "reasoning_agent"})
     
-    # Create initial state with multi-step goal
-    print("2. Creating initial state with multi-step goal...")
+    # Create initial state with complex goal for hierarchical planning
+    print("2. Creating initial state with complex goal for hierarchical planning...")
     initial_state = State()
     initial_state.data['goal'] = "Create a file named 'hello.txt' with the content 'Hello ONIKS!', then display its content to the console."
-    initial_state.add_message("Demo started with multi-step file creation and display goal")
+    initial_state.add_message("Demo started with complex goal that will be decomposed into atomic subtasks")
     
     print(f"   Goal: {initial_state.data['goal']}")
     
@@ -217,6 +218,7 @@ def main() -> None:
     
     # Create agents and nodes
     print("5. Creating agents and nodes...")
+    planner_agent = PlannerAgent("planner_agent", llm_client)
     reasoning_agent = ReasoningAgent("reasoning_agent", tools, llm_client)
     
     # Create tool nodes for each tool
@@ -227,15 +229,24 @@ def main() -> None:
     
     tool_nodes = [list_files_node, write_file_node, execute_bash_node, task_complete_node]
     
+    print(f"   Created planner agent: {planner_agent.name}")
     print(f"   Created reasoning agent: {reasoning_agent.name}")
     for node in tool_nodes:
         print(f"   Created tool node: {node.name}")
     
     # Add nodes to graph
     print("6. Building comprehensive graph structure...")
+    graph.add_node(planner_agent)
     graph.add_node(reasoning_agent)
     for node in tool_nodes:
         graph.add_node(node)
+    
+    # Add edge from planner agent to reasoning agent (after plan is created)
+    graph.add_edge(
+        "planner_agent",
+        "reasoning_agent", 
+        condition=lambda state: 'plan' in state.data and state.data['plan']
+    )
     
     # Add edges from reasoning agent to each tool node
     graph.add_edge(
@@ -264,22 +275,41 @@ def main() -> None:
     
     # Add edges from all tool nodes back to reasoning agent for next step analysis
     # Each tool node can transition back to reasoning agent (except task_complete which is terminal)
+    # But first remove the completed task from the plan
+    def create_plan_progression_condition():
+        """Create a condition that removes completed task and continues to next task."""
+        def condition_with_plan_progression(state):
+            # Remove the completed task from the plan
+            plan = state.data.get('plan', [])
+            if plan and isinstance(plan, list) and len(plan) > 0:
+                completed_task = plan.pop(0)
+                state.data['plan'] = plan
+                state.add_message(f"Removed completed task from plan: {completed_task}")
+                state.add_message(f"Remaining tasks in plan: {len(plan)}")
+                
+                # Continue to next task if plan is not empty
+                return len(plan) > 0
+            else:
+                state.add_message("No tasks to remove from plan")
+                return False
+        return condition_with_plan_progression
+    
     graph.add_edge(
         "list_files",
         "reasoning_agent",
-        condition=lambda state: True  # Always return to reasoning agent
+        condition=create_plan_progression_condition()
     )
     
     graph.add_edge(
         "write_file",
         "reasoning_agent",
-        condition=lambda state: True  # Always return to reasoning agent
+        condition=create_plan_progression_condition()
     )
     
     graph.add_edge(
         "execute_bash_command",
         "reasoning_agent",
-        condition=lambda state: True  # Always return to reasoning agent
+        condition=create_plan_progression_condition()
     )
     
     # Note: task_complete node has no outgoing edges - it's a terminal node
@@ -290,13 +320,13 @@ def main() -> None:
     
     # Execute the graph
     print("7. Executing graph...")
-    print("   Starting from reasoning_agent node...\n")
+    print("   Starting from planner_agent node...\n")
     
     try:
         final_state = graph.execute(
             initial_state=initial_state,
             thread_id="demo_thread_001",
-            start_node="reasoning_agent",
+            start_node="planner_agent",
             max_iterations=10
         )
         
