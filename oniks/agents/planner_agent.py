@@ -390,7 +390,7 @@ WHY THE CORRECT EXAMPLE IS MANDATORY:
 CORRECT Example - File Processing:
 Goal: Create config.json with initial values, then update port to 8080, then validate
 CORRECT sequence (MANDATORY):
-1. write_file(file_path='config.json', content='{"port": 3000, "host": "localhost"}')  # Initial state
+1. write_file(file_path='config.json', content='{{"port": 3000, "host": "localhost"}}')  # Initial state
 2. file_search_replace(file_path='config.json', search_pattern='"port": 3000', replace_with='"port": 8080')  # Modified state
 3. execute_bash_command(command='cat config.json')  # Validate final state
 
