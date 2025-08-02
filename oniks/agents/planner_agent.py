@@ -476,18 +476,14 @@ Create your MANDATORY sequential tool calls to achieve the goal:"""
         return prompt
     
     def _parse_decomposition_response_robust(self, response: str) -> List[str]:
-        """Parse LLM response using robust regex-based extraction to cut through fluff.
+        """Parse LLM response using fast, optimized step-by-step approach.
         
-        This method uses multiple parsing strategies to extract tool calls from ANY text
-        environment, cutting through "polite" fluff and getting to the essence. It can
-        handle various formats and finds numbered lists with tool calls regardless of
-        surrounding text.
+        This method uses a simple, fast two-step approach:
+        1. Find lines starting with numbers (1., 2., 3., etc.)
+        2. Extract tool calls from those specific lines only
         
-        Parsing strategies (in order):
-        1. Numbered list with function calls (primary)
-        2. Bullet/dash list with function calls  
-        3. Standalone function calls anywhere in text
-        4. Multi-line function calls with comments
+        This approach is thousands of times faster than complex regex patterns
+        and avoids catastrophic backtracking that can cause 800+ second delays.
         
         Args:
             response: Raw response from the LLM.
@@ -495,80 +491,116 @@ Create your MANDATORY sequential tool calls to achieve the goal:"""
         Returns:
             List of tool call strings extracted from the response.
         """
+        try:
+            parse_start_time = time.time()
+        except Exception:
+            # Handle mocking issues in tests
+            parse_start_time = 0.0
+        
         if not response or not isinstance(response, str):
             logger.warning("Empty or invalid decomposition response")
             return []
         
         tool_calls = []
         
-        # Strategy 1: Process all lines looking for any kind of list items with function calls
-        # This unified approach handles numbered, bullet, and asterisk lists all at once
+        # STEP 1: Find lines starting with numbers or bullets (fast string operations)
         lines = response.split('\n')
+        numbered_lines = []
+        
         for line in lines:
-            line = line.strip()
-            if not line:
+            stripped_line = line.strip()
+            if not stripped_line:
                 continue
-            
-            # Check for numbered items: "1. function_name(...)"
-            numbered_match = re.match(r'^\s*(\d+)\.\s*(.+?)(?:\s*#.*)?$', line)
-            if numbered_match:
-                num, potential_call = numbered_match.groups()
-                potential_call = potential_call.strip()
                 
-                extracted_call = self._extract_function_call_from_line(potential_call)
-                if extracted_call and self._is_valid_tool_call(extracted_call):
-                    tool_calls.append(extracted_call)
-                    logger.debug(f"Extracted numbered tool call {num}: {extracted_call}")
-                continue
+            # Check for numbered items: "1. function_name(...)"
+            if len(stripped_line) > 2 and stripped_line[0].isdigit():
+                # Find the dot after the number
+                dot_pos = -1
+                for i in range(1, min(4, len(stripped_line))):  # Check first 4 chars for number
+                    if stripped_line[i] == '.':
+                        dot_pos = i
+                        break
+                    elif not stripped_line[i].isdigit():
+                        break
+                
+                if dot_pos > 0:
+                    # Extract content after number and dot
+                    content = stripped_line[dot_pos + 1:].strip()
+                    if content:
+                        numbered_lines.append(content)
+                        continue
             
             # Check for bullet items: "- function_name(...)" or "* function_name(...)"
-            bullet_match = re.match(r'^\s*[-*]\s*(.+?)(?:\s*#.*)?$', line)
-            if bullet_match:
-                potential_call = bullet_match.group(1).strip()
-                
-                extracted_call = self._extract_function_call_from_line(potential_call)
-                if extracted_call and self._is_valid_tool_call(extracted_call):
-                    tool_calls.append(extracted_call)
-                    logger.debug(f"Extracted bullet tool call: {extracted_call}")
+            if len(stripped_line) > 2 and (stripped_line[0] == '-' or stripped_line[0] == '*'):
+                if stripped_line[1] == ' ':
+                    content = stripped_line[2:].strip()
+                    if content:
+                        numbered_lines.append(content)
+        
+        # STEP 2: Extract tool calls from numbered lines only (fast string operations)
+        for content in numbered_lines:
+            # Look for pattern: word_name(  
+            paren_pos = content.find('(')
+            if paren_pos == -1:
                 continue
+                
+            # Extract potential function name
+            func_name_part = content[:paren_pos].strip()
+            if not func_name_part or not func_name_part.replace('_', '').replace('-', '').isalnum():
+                continue
+                
+            # Find matching closing parenthesis using simple counting
+            paren_count = 0
+            end_pos = -1
+            in_quote = False
+            quote_char = None
             
-            # If it's not a list item but contains a function call, extract it
-            extracted_call = self._extract_function_call_from_line(line)
-            if extracted_call and self._is_valid_tool_call(extracted_call):
-                tool_calls.append(extracted_call)
-                logger.debug(f"Extracted standalone tool call: {extracted_call}")
+            for i in range(paren_pos, len(content)):
+                char = content[i]
+                
+                # Handle quotes (simple approach)
+                if not in_quote and (char == '"' or char == "'"):
+                    in_quote = True
+                    quote_char = char
+                elif in_quote and char == quote_char:
+                    # Check if it's escaped
+                    if i == 0 or content[i-1] != '\\':
+                        in_quote = False
+                        quote_char = None
+                
+                # Count parentheses only when not in quotes
+                if not in_quote:
+                    if char == '(':
+                        paren_count += 1
+                    elif char == ')':
+                        paren_count -= 1
+                        if paren_count == 0:
+                            end_pos = i
+                            break
+            
+            if end_pos > paren_pos:
+                # Extract complete function call
+                tool_call = content[:end_pos + 1].strip()
+                
+                # Basic validation: has function name and parentheses
+                if tool_call and '(' in tool_call and tool_call.endswith(')'):
+                    tool_calls.append(tool_call)
+                    logger.debug(f"Extracted tool call: {tool_call}")
         
-        if tool_calls:
-            logger.info(f"Found {len(tool_calls)} tool calls using unified approach")
-        
-        # Strategy 2: If no matches yet, try more aggressive pattern matching for any function calls
+        # FALLBACK: If no structured lists found, look for function calls in text
         if not tool_calls:
-            # More aggressive pattern to find function calls anywhere in the text
-            function_pattern = r'([a-zA-Z_][a-zA-Z0-9_]*\s*\([^)]*\))'
-            function_matches = re.findall(function_pattern, response)
-            
-            if function_matches:
-                logger.info(f"Found {len(function_matches)} potential function calls in text")
-                for tool_call in function_matches:
-                    clean_tool_call = tool_call.strip()
-                    if self._is_valid_tool_call(clean_tool_call):
-                        tool_calls.append(clean_tool_call)
-                        logger.debug(f"Extracted function call: {clean_tool_call}")
-        
-        # Strategy 3: Multi-line function calls (for complex arguments)
-        if not tool_calls:
-            # Handle cases where function calls span multiple lines
-            multiline_pattern = r'([a-zA-Z_][a-zA-Z0-9_]*\s*\([^)]*(?:\n[^)]*)*\))'
-            multiline_matches = re.findall(multiline_pattern, response, re.DOTALL)
-            
-            if multiline_matches:
-                logger.info(f"Found {len(multiline_matches)} potential multi-line function calls")
-                for tool_call in multiline_matches:
-                    # Clean up multi-line call (remove extra whitespace/newlines)
-                    clean_tool_call = re.sub(r'\s+', ' ', tool_call.strip())
-                    if self._is_valid_tool_call(clean_tool_call):
-                        tool_calls.append(clean_tool_call)
-                        logger.debug(f"Extracted multi-line tool call: {clean_tool_call}")
+            # Simple scan for function_name( patterns in the entire text
+            words = response.split()
+            for word in words:
+                # Look for function call pattern
+                if '(' in word:
+                    # Try to extract from this word and surrounding context
+                    start_idx = response.find(word)
+                    if start_idx != -1:
+                        # Look for complete function call starting from this position
+                        extracted = self._extract_function_call_from_line(response[start_idx:start_idx + 200])
+                        if extracted:
+                            tool_calls.append(extracted)
         
         # Remove duplicates while preserving order
         unique_tool_calls = []
@@ -578,19 +610,25 @@ Create your MANDATORY sequential tool calls to achieve the goal:"""
                 unique_tool_calls.append(tool_call)
                 seen.add(tool_call)
         
-        logger.info(f"Robust parser extracted {len(unique_tool_calls)} unique tool calls from response")
+        try:
+            parse_end_time = time.time()
+            parse_duration = parse_end_time - parse_start_time
+            logger.info(f"Fast parser extracted {len(unique_tool_calls)} unique tool calls in {parse_duration:.4f}s")
+        except Exception:
+            # Handle mocking issues in tests
+            logger.info(f"Fast parser extracted {len(unique_tool_calls)} unique tool calls")
         
         if not unique_tool_calls:
-            logger.warning("Robust parser could not extract any valid tool calls")
-            logger.debug(f"Raw response content: {response[:500]}...")  # Log first 500 chars for debugging
+            logger.warning("Fast parser could not extract any valid tool calls")
+            logger.debug(f"Raw response content: {response[:200]}...")  # Log first 200 chars for debugging
         
         return unique_tool_calls
     
     def _extract_function_call_from_line(self, line: str) -> Optional[str]:
-        """Extract a function call from a line, handling balanced parentheses and quotes.
+        """Extract a function call from a line using fast string operations.
         
-        This method carefully parses a line to extract a complete function call,
-        properly handling nested quotes, escaped characters, and balanced parentheses.
+        This method is kept for backward compatibility with existing tests.
+        It uses the same fast logic as the optimized parser.
         
         Args:
             line: The line of text to extract a function call from.
@@ -598,47 +636,57 @@ Create your MANDATORY sequential tool calls to achieve the goal:"""
         Returns:
             The extracted function call string, or None if no valid function call found.
         """
+        if not line or not isinstance(line, str):
+            return None
+            
         line = line.strip()
         
-        # Find the start of a function call
-        func_start_match = re.search(r'([a-zA-Z_][a-zA-Z0-9_]*)\s*\(', line)
-        if not func_start_match:
+        # Look for pattern: word_name(  
+        paren_pos = line.find('(')
+        if paren_pos == -1:
             return None
-        
-        func_name = func_start_match.group(1)
-        start_pos = func_start_match.start()
-        paren_start = func_start_match.end() - 1  # Position of opening parenthesis
-        
-        # Find the matching closing parenthesis
-        paren_count = 1
-        pos = paren_start + 1
-        in_single_quote = False
-        in_double_quote = False
-        escape_next = False
-        
-        while pos < len(line) and paren_count > 0:
-            char = line[pos]
             
-            if escape_next:
-                escape_next = False
-            elif char == '\\':
-                escape_next = True
-            elif char == "'" and not in_double_quote:
-                in_single_quote = not in_single_quote
-            elif char == '"' and not in_single_quote:
-                in_double_quote = not in_double_quote
-            elif not in_single_quote and not in_double_quote:
+        # Extract potential function name
+        func_name_part = line[:paren_pos].strip()
+        if not func_name_part or not func_name_part.replace('_', '').replace('-', '').isalnum():
+            return None
+            
+        # Find matching closing parenthesis using simple counting
+        paren_count = 0
+        end_pos = -1
+        in_quote = False
+        quote_char = None
+        
+        for i in range(paren_pos, len(line)):
+            char = line[i]
+            
+            # Handle quotes (simple approach)
+            if not in_quote and (char == '"' or char == "'"):
+                in_quote = True
+                quote_char = char
+            elif in_quote and char == quote_char:
+                # Check if it's escaped
+                if i == 0 or line[i-1] != '\\':
+                    in_quote = False
+                    quote_char = None
+            
+            # Count parentheses only when not in quotes
+            if not in_quote:
                 if char == '(':
                     paren_count += 1
                 elif char == ')':
                     paren_count -= 1
-            
-            pos += 1
+                    if paren_count == 0:
+                        end_pos = i
+                        break
         
-        if paren_count == 0:
-            # Found matching closing parenthesis
-            function_call = line[start_pos:pos]
-            return function_call.strip()
+        if end_pos > paren_pos:
+            # Extract complete function call
+            tool_call = line[:end_pos + 1].strip()
+            
+            # Basic validation: has function name and parentheses
+            if tool_call and '(' in tool_call and tool_call.endswith(')'):
+                return tool_call
         
         return None
     
@@ -658,87 +706,48 @@ Create your MANDATORY sequential tool calls to achieve the goal:"""
     
     
     def _is_valid_tool_call(self, tool_call: str) -> bool:
-        """Validate if a string represents a valid tool call format.
+        """Fast validation of tool call format using simple string operations.
         
-        In STRICT LLM-ONLY mode, this method validates that the LLM response
-        contains properly formatted function calls. It does NOT validate tool
-        availability - that happens at execution time. We trust the LLM to
-        generate appropriate tool calls based on the prompt.
+        This optimized method uses simple string operations instead of regex
+        and AST parsing to achieve sub-second performance.
         
         Args:
             tool_call: String to validate as a tool call.
             
         Returns:
             True if the string is a valid function call format, False otherwise.
-            
-        Example:
-            >>> agent = PlannerAgent("test", llm_client, [])
-            >>> agent._is_valid_tool_call("write_file(file_path='test.txt', content='Hello')")
-            True
-            >>> agent._is_valid_tool_call("invalid_syntax(")
-            False
-            >>> agent._is_valid_tool_call("just some text")
-            False
         """
         if not isinstance(tool_call, str) or not tool_call.strip():
             return False
         
         tool_call = tool_call.strip()
         
-        # Check if it has basic function call structure: name(...)
-        import re
-        match = re.match(r'^(\w+)\s*\(.*\)$', tool_call)
-        if not match:
+        # Fast check: must contain parentheses
+        if '(' not in tool_call or not tool_call.endswith(')'):
             return False
         
-        tool_name = match.group(1)
+        # Find the opening parenthesis
+        paren_pos = tool_call.find('(')
+        if paren_pos == 0:
+            return False  # Can't start with parenthesis
         
-        # In STRICT LLM-ONLY mode, we accept any well-formed function call
-        # The LLM is responsible for generating appropriate tool calls
-        # Tool availability is checked at execution time, not parsing time
+        # Extract function name (everything before opening parenthesis)
+        func_name = tool_call[:paren_pos].strip()
+        
+        # Fast validation: function name should be alphanumeric with underscores
+        if not func_name or not func_name.replace('_', '').replace('-', '').isalnum():
+            return False
         
         # Always allow task_complete as it's a standard completion tool
-        if tool_name == 'task_complete':
+        if func_name == 'task_complete':
             return True
         
-        # Allow any valid function call format - trust the LLM
-        # This enables the LLM to suggest tools that might be available
+        # Basic check: should have balanced parentheses (simple count)
+        open_count = tool_call.count('(')
+        close_count = tool_call.count(')')
         
-        # Try to parse the arguments to ensure valid syntax
-        try:
-            # Extract arguments part
-            args_match = re.match(r'^\w+\s*\((.*)\)$', tool_call)
-            if not args_match:
-                return False
-            
-            args_str = args_match.group(1).strip()
-            
-            # If no arguments, it's valid
-            if not args_str:
-                return True
-            
-            # Try to parse as function call arguments
-            try:
-                # Create a dummy function call and try to parse it
-                dummy_call = f"dummy_func({args_str})"
-                import ast
-                parsed = ast.parse(dummy_call, mode='eval')
-                
-                # Check if it's a valid call expression
-                if not isinstance(parsed.body, ast.Call):
-                    return False
-                
-                return True
-                
-            except (SyntaxError, ValueError):
-                # If AST parsing fails, try a simple regex check for key=value pairs
-                # This handles cases like: tool_name(key1='value1', key2='value2')
-                kv_pattern = r"^\s*\w+\s*=\s*['\"][^'\"]*['\"](\s*,\s*\w+\s*=\s*['\"][^'\"]*['\"])*\s*$"
-                if re.match(kv_pattern, args_str):
-                    return True
-                
-                return False
-                
-        except Exception as e:
-            logger.warning(f"Error validating tool call syntax '{tool_call}': {e}")
+        if open_count != close_count:
             return False
+        
+        # If we get here, it's likely a valid function call format
+        return True

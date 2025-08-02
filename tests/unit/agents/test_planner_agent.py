@@ -634,7 +634,7 @@ class TestPlannerAgentTimeout(unittest.TestCase):
     def test_timeout_before_llm_call(self, mock_time):
         """Test timeout before LLM call."""
         # Mock time to simulate timeout
-        mock_time.side_effect = [0.0, 0.2]  # Start at 0, then exceed timeout
+        mock_time.side_effect = [0.0, 0.2, 0.3, 0.4]  # Start at 0, then exceed timeout
         
         with self.assertRaises(PlanningTimeoutError) as context:
             self.agent.execute(self.state)
@@ -651,7 +651,7 @@ class TestPlannerAgentTimeout(unittest.TestCase):
     def test_timeout_after_llm_call(self, mock_time):
         """Test timeout after LLM call."""
         # Mock time progression: start, before LLM, after LLM (timeout)
-        mock_time.side_effect = [0.0, 0.05, 0.2]  # Within timeout, then exceed
+        mock_time.side_effect = [0.0, 0.05, 0.2, 0.3, 0.4]  # Within timeout, then exceed
         
         # Mock successful LLM response
         self.mock_llm_client.invoke.return_value = "1. write_file(file_path='test.txt', content='Hello')"
@@ -671,7 +671,7 @@ class TestPlannerAgentTimeout(unittest.TestCase):
     def test_timeout_after_parsing(self, mock_time):
         """Test timeout after parsing."""
         # Mock time progression: start, before LLM, after LLM, after parsing (timeout)
-        mock_time.side_effect = [0.0, 0.02, 0.04, 0.2]  # Within timeout, then exceed
+        mock_time.side_effect = [0.0, 0.02, 0.04, 0.05, 0.2, 0.3, 0.4]  # Within timeout, then exceed
         
         # Mock successful LLM response
         self.mock_llm_client.invoke.return_value = "1. write_file(file_path='test.txt', content='Hello')"
@@ -686,7 +686,8 @@ class TestPlannerAgentTimeout(unittest.TestCase):
     def test_successful_execution_within_timeout(self, mock_time):
         """Test successful execution that completes within timeout."""
         # Mock time progression: always within timeout
-        mock_time.side_effect = [0.0, 0.02, 0.04, 0.06, 0.08]  # All within 0.1s timeout
+        # Added more values to account for performance measurement calls
+        mock_time.side_effect = [0.0, 0.02, 0.04, 0.05, 0.06, 0.07, 0.08, 0.09]  # All within 0.1s timeout
         
         # Mock successful LLM response
         self.mock_llm_client.invoke.return_value = "1. write_file(file_path='test.txt', content='Hello')"
