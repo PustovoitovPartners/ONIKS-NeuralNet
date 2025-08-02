@@ -1,7 +1,10 @@
 """Unit tests for the PlannerAgent class.
 
 This module contains comprehensive tests for the PlannerAgent implementation,
-covering initialization, task decomposition, LLM integration, and fallback behavior.
+covering initialization, task decomposition, and STRICT LLM-ONLY operation.
+
+CRITICAL: These tests verify that PlannerAgent operates in STRICT LLM-ONLY mode
+with NO FALLBACKS. Any LLM failure must result in LLMUnavailableError.
 """
 
 import unittest
@@ -9,7 +12,8 @@ from unittest.mock import Mock, patch, MagicMock
 
 from oniks.agents.planner_agent import PlannerAgent
 from oniks.core.state import State
-from oniks.llm.client import OllamaClient
+from oniks.core.exceptions import LLMUnavailableError
+from oniks.llm.client import OllamaClient, OllamaConnectionError
 
 
 class TestPlannerAgentInitialization(unittest.TestCase):
@@ -56,8 +60,8 @@ class TestPlannerAgentInitialization(unittest.TestCase):
         self.assertEqual(repr(agent), expected)
 
 
-class TestPlannerAgentExecution(unittest.TestCase):
-    """Test cases for PlannerAgent execution logic."""
+class TestPlannerAgentStrictLLMOnlyExecution(unittest.TestCase):
+    """Test cases for PlannerAgent STRICT LLM-ONLY execution logic."""
     
     def setUp(self):
         """Set up test fixtures."""
@@ -65,71 +69,84 @@ class TestPlannerAgentExecution(unittest.TestCase):
         self.agent = PlannerAgent("planner", self.mock_llm_client)
         self.state = State()
     
-    def test_planner_agent_execute_with_goal(self):
-        """Test PlannerAgent execution with a valid goal."""
+    def test_planner_agent_execute_with_valid_goal_and_successful_llm(self):
+        """Test PlannerAgent execution with valid goal and successful LLM response."""
         self.state.data['goal'] = "Create file hello.txt with Hello World and display it"
         
-        # Mock LLM response
-        mock_response = """1. Create a file named 'hello.txt' with the content 'Hello World'
-2. Display the content of 'hello.txt' to the console"""
+        # Mock successful LLM response with tool calls
+        mock_response = """1. write_file(file_path='hello.txt', content='Hello World')
+2. execute_bash_command(command='cat hello.txt')"""
         self.mock_llm_client.invoke.return_value = mock_response
         
         result_state = self.agent.execute(self.state)
         
-        # Verify plan was created
+        # Verify LLM-generated plan was created
         self.assertIn('plan', result_state.data)
         plan = result_state.data['plan']
         self.assertIsInstance(plan, list)
-        self.assertEqual(len(plan), 3)  # 2 tasks + confirmation
-        self.assertEqual(plan[0], "Create a file named 'hello.txt' with the content 'Hello World'")
-        self.assertEqual(plan[1], "Display the content of 'hello.txt' to the console")
-        self.assertEqual(plan[2], "Confirm that all previous steps are complete")
+        self.assertEqual(len(plan), 3)  # 2 LLM tool calls + task_complete()
+        self.assertEqual(plan[0], "write_file(file_path='hello.txt', content='Hello World')")
+        self.assertEqual(plan[1], "execute_bash_command(command='cat hello.txt')")
+        self.assertEqual(plan[2], "task_complete()")
         
         # Verify LLM was called
         self.mock_llm_client.invoke.assert_called_once()
         
-        # Verify messages were added
+        # Verify [LLM-POWERED] messages were added
         messages = result_state.message_history
-        self.assertTrue(any("starting task decomposition" in msg for msg in messages))
-        self.assertTrue(any("Created plan with 3 subtasks" in msg for msg in messages))
+        self.assertTrue(any("STRICT LLM-ONLY task decomposition" in msg for msg in messages))
+        self.assertTrue(any("[LLM-POWERED]" in msg for msg in messages))
+        self.assertFalse(any("[LLM-ERROR]" in msg for msg in messages))
+        self.assertFalse(any("fallback" in msg.lower() for msg in messages))
     
-    def test_planner_agent_execute_without_goal(self):
-        """Test PlannerAgent execution without goal in state."""
-        # No goal in state data
-        result_state = self.agent.execute(self.state)
+    def test_planner_agent_execute_without_goal_throws_error(self):
+        """Test PlannerAgent execution without goal throws LLMUnavailableError."""
+        # No goal in state data - MUST fail in strict mode
+        with self.assertRaises(LLMUnavailableError) as context:
+            self.agent.execute(self.state)
         
-        # Verify empty plan was created
-        self.assertIn('plan', result_state.data)
-        self.assertEqual(result_state.data['plan'], [])
-        
-        # Verify LLM was not called
-        self.mock_llm_client.invoke.assert_not_called()
-        
-        # Verify appropriate message was added
-        messages = result_state.message_history
-        self.assertTrue(any("No goal found in state data" in msg for msg in messages))
-    
-    def test_planner_agent_execute_with_empty_goal(self):
-        """Test PlannerAgent execution with empty goal."""
-        self.state.data['goal'] = ""
-        
-        result_state = self.agent.execute(self.state)
-        
-        # Verify empty plan was created
-        self.assertIn('plan', result_state.data)
-        self.assertEqual(result_state.data['plan'], [])
+        # Verify error details
+        error = context.exception
+        self.assertIn("Goal validation failed", error.message)
+        self.assertIsNotNone(error.correlation_id)
+        self.assertIn("agent_execution_id", error.request_details)
         
         # Verify LLM was not called
         self.mock_llm_client.invoke.assert_not_called()
     
-    def test_planner_agent_execute_preserves_original_state(self):
-        """Test that execution preserves original state object."""
-        original_goal = "Test goal"
+    def test_planner_agent_execute_with_empty_goal_throws_error(self):
+        """Test PlannerAgent execution with empty goal throws LLMUnavailableError."""
+        self.state.data['goal'] = ""  # Empty goal - MUST fail in strict mode
+        
+        with self.assertRaises(LLMUnavailableError) as context:
+            self.agent.execute(self.state)
+        
+        # Verify error details
+        error = context.exception
+        self.assertIn("Goal validation failed", error.message)
+        
+        # Verify LLM was not called
+        self.mock_llm_client.invoke.assert_not_called()
+    
+    def test_planner_agent_execute_with_whitespace_only_goal_throws_error(self):
+        """Test PlannerAgent execution with whitespace-only goal throws LLMUnavailableError."""
+        self.state.data['goal'] = "   \n\t   "  # Whitespace only - MUST fail
+        
+        with self.assertRaises(LLMUnavailableError) as context:
+            self.agent.execute(self.state)
+        
+        # Verify error details
+        error = context.exception
+        self.assertIn("Goal validation failed", error.message)
+    
+    def test_planner_agent_execute_preserves_original_state_on_success(self):
+        """Test that successful execution preserves original state object."""
+        original_goal = "write_file(file_path='test.txt', content='test')"
         self.state.data['goal'] = original_goal
         self.state.add_message("Original message")
         
-        # Mock LLM response
-        self.mock_llm_client.invoke.return_value = "1. First task\n2. Second task"
+        # Mock successful LLM response
+        self.mock_llm_client.invoke.return_value = "1. write_file(file_path='test.txt', content='test')"
         
         result_state = self.agent.execute(self.state)
         
@@ -138,28 +155,100 @@ class TestPlannerAgentExecution(unittest.TestCase):
         self.assertEqual(len(self.state.message_history), 1)
         self.assertNotIn('plan', self.state.data)
         
-        # Verify result state is different object
+        # Verify result state is different object with LLM-generated plan
         self.assertIsNot(result_state, self.state)
         self.assertIn('plan', result_state.data)
     
-    def test_planner_agent_execute_with_llm_failure(self):
-        """Test PlannerAgent execution when LLM fails."""
+    def test_planner_agent_execute_with_llm_connection_error_throws_error(self):
+        """Test PlannerAgent throws LLMUnavailableError when LLM connection fails."""
         self.state.data['goal'] = "Create hello.txt with Hello ONIKS! and display it"
         
-        # Mock LLM failure
-        self.mock_llm_client.invoke.side_effect = Exception("Connection error")
+        # Mock LLM connection failure
+        self.mock_llm_client.invoke.side_effect = OllamaConnectionError("Connection refused")
         
-        result_state = self.agent.execute(self.state)
+        with self.assertRaises(LLMUnavailableError) as context:
+            self.agent.execute(self.state)
         
-        # Verify fallback plan was created
-        self.assertIn('plan', result_state.data)
-        plan = result_state.data['plan']
-        self.assertIsInstance(plan, list)
-        self.assertGreater(len(plan), 0)
+        # Verify error details
+        error = context.exception
+        self.assertIn("LLM decomposition failed", error.message)
+        self.assertIsInstance(error.original_error, OllamaConnectionError)
+        self.assertIn("agent_execution_id", error.request_details)
+        self.assertIn("goal", error.request_details)
+    
+    def test_planner_agent_execute_with_llm_generic_error_throws_error(self):
+        """Test PlannerAgent throws LLMUnavailableError for any LLM error."""
+        self.state.data['goal'] = "Valid goal"
         
-        # Verify fallback messages
-        messages = result_state.message_history
-        self.assertTrue(any("fallback" in msg.lower() for msg in messages))
+        # Mock generic LLM failure
+        self.mock_llm_client.invoke.side_effect = Exception("Unexpected error")
+        
+        with self.assertRaises(LLMUnavailableError) as context:
+            self.agent.execute(self.state)
+        
+        # Verify error details
+        error = context.exception
+        self.assertIn("LLM decomposition failed", error.message)
+        self.assertIsInstance(error.original_error, Exception)
+        self.assertEqual(str(error.original_error), "Unexpected error")
+    
+    def test_planner_agent_execute_with_empty_llm_response_throws_error(self):
+        """Test PlannerAgent throws LLMUnavailableError when LLM returns empty response."""
+        self.state.data['goal'] = "Valid goal"
+        
+        # Mock empty LLM response
+        self.mock_llm_client.invoke.return_value = ""
+        
+        with self.assertRaises(LLMUnavailableError) as context:
+            self.agent.execute(self.state)
+        
+        # Verify error details
+        error = context.exception
+        self.assertIn("LLM response validation failed", error.message)
+        self.assertIn("empty or invalid content", error.message)
+    
+    def test_planner_agent_execute_with_whitespace_only_llm_response_throws_error(self):
+        """Test PlannerAgent throws LLMUnavailableError when LLM returns whitespace-only response."""
+        self.state.data['goal'] = "Valid goal"
+        
+        # Mock whitespace-only LLM response
+        self.mock_llm_client.invoke.return_value = "   \n\t   "
+        
+        with self.assertRaises(LLMUnavailableError) as context:
+            self.agent.execute(self.state)
+        
+        # Verify error details
+        error = context.exception
+        self.assertIn("LLM response validation failed", error.message)
+    
+    def test_planner_agent_execute_with_non_string_llm_response_throws_error(self):
+        """Test PlannerAgent throws LLMUnavailableError when LLM returns non-string response."""
+        self.state.data['goal'] = "Valid goal"
+        
+        # Mock non-string LLM response
+        self.mock_llm_client.invoke.return_value = {"invalid": "response"}
+        
+        with self.assertRaises(LLMUnavailableError) as context:
+            self.agent.execute(self.state)
+        
+        # Verify error details
+        error = context.exception
+        self.assertIn("LLM response validation failed", error.message)
+    
+    def test_planner_agent_execute_with_unparseable_llm_response_throws_error(self):
+        """Test PlannerAgent throws LLMUnavailableError when LLM response has no valid tool calls."""
+        self.state.data['goal'] = "Valid goal"
+        
+        # Mock LLM response with no parseable tool calls
+        self.mock_llm_client.invoke.return_value = "This is just text without any tool calls or numbered items."
+        
+        with self.assertRaises(LLMUnavailableError) as context:
+            self.agent.execute(self.state)
+        
+        # Verify error details
+        error = context.exception
+        self.assertIn("LLM response parsing failed", error.message)
+        self.assertIn("no valid tool calls extracted", error.message)
 
 
 class TestPlannerAgentPromptGeneration(unittest.TestCase):
@@ -285,132 +374,114 @@ class TestPlannerAgentResponseParsing(unittest.TestCase):
         self.assertEqual(tasks, [])
 
 
-class TestPlannerAgentFallbackDecomposition(unittest.TestCase):
-    """Test cases for PlannerAgent fallback decomposition."""
+
+
+class TestPlannerAgentStrictLLMOnlyIntegration(unittest.TestCase):
+    """STRICT LLM-ONLY integration test cases for PlannerAgent."""
     
     def setUp(self):
         """Set up test fixtures."""
         self.mock_llm_client = Mock(spec=OllamaClient)
         self.agent = PlannerAgent("planner", self.mock_llm_client)
     
-    def test_perform_basic_decomposition_demo_case(self):
-        """Test fallback decomposition for the demo case."""
-        goal = "Create hello.txt with Hello ONIKS! and display it"
-        
-        tasks = self.agent._perform_basic_decomposition(goal)
-        
-        expected = [
-            "Create a file named 'hello.txt' with the content 'Hello ONIKS!'",
-            "Display the content of 'hello.txt' to the console",
-            "Confirm that all previous steps are complete"
-        ]
-        self.assertEqual(tasks, expected)
-    
-    def test_perform_basic_decomposition_file_creation(self):
-        """Test fallback decomposition for file creation."""
-        goal = "Create a new file with some content"
-        
-        tasks = self.agent._perform_basic_decomposition(goal)
-        
-        self.assertGreater(len(tasks), 0)
-        self.assertTrue(any("create" in task.lower() for task in tasks))
-        self.assertEqual(tasks[-1], "Confirm that all previous steps are complete")
-    
-    def test_perform_basic_decomposition_file_reading(self):
-        """Test fallback decomposition for file reading."""
-        goal = "Read the contents of data.txt file"
-        
-        tasks = self.agent._perform_basic_decomposition(goal)
-        
-        expected = [
-            "Read the specified file content",
-            "Confirm that all previous steps are complete"
-        ]
-        self.assertEqual(tasks, expected)
-    
-    def test_perform_basic_decomposition_generic_goal(self):
-        """Test fallback decomposition for generic goal."""
-        goal = "Perform some complex operation"
-        
-        tasks = self.agent._perform_basic_decomposition(goal)
-        
-        expected = [
-            "Execute the following goal: Perform some complex operation",
-            "Confirm that all previous steps are complete"
-        ]
-        self.assertEqual(tasks, expected)
-    
-    def test_perform_basic_decomposition_with_none_goal(self):
-        """Test fallback decomposition with None goal."""
-        tasks = self.agent._perform_basic_decomposition(None)
-        
-        expected = [
-            "Execute the following goal: None",
-            "Confirm that all previous steps are complete" 
-        ]
-        self.assertEqual(tasks, expected)
-
-
-class TestPlannerAgentIntegration(unittest.TestCase):
-    """Integration test cases for PlannerAgent."""
-    
-    def setUp(self):
-        """Set up test fixtures."""
-        self.mock_llm_client = Mock(spec=OllamaClient)
-        self.agent = PlannerAgent("planner", self.mock_llm_client)
-    
-    def test_full_execution_cycle_with_llm_success(self):
-        """Test full execution cycle with successful LLM interaction."""
+    def test_full_execution_cycle_with_successful_llm_tool_calls(self):
+        """Test full execution cycle with successful LLM interaction returning tool calls."""
         state = State()
         state.data['goal'] = "Create config.ini and backup existing files"
         
-        # Mock successful LLM response
-        mock_response = """1. Create a file named 'config.ini' with configuration data
-2. Create backup of existing files  
-3. Verify all operations completed"""
+        # Mock successful LLM response with valid tool calls
+        mock_response = """1. write_file(file_path='config.ini', content='[default]key=value')
+2. execute_bash_command(command='cp *.txt backup/')
+3. list_files(path='.')"""
         self.mock_llm_client.invoke.return_value = mock_response
         
         result_state = self.agent.execute(state)
         
-        # Verify complete execution
+        # Verify complete LLM-powered execution
         self.assertIn('plan', result_state.data)
         self.assertIn('decomposition_prompt', result_state.data)
         self.assertIn('decomposition_response', result_state.data)
         
         plan = result_state.data['plan']
-        self.assertEqual(len(plan), 4)  # 3 tasks + confirmation
-        self.assertEqual(plan[-1], "Confirm that all previous steps are complete")
+        self.assertEqual(len(plan), 4)  # 3 LLM tool calls + task_complete()
+        self.assertEqual(plan[0], "write_file(file_path='config.ini', content='[default]key=value')")
+        self.assertEqual(plan[1], "execute_bash_command(command='cp *.txt backup/')")
+        self.assertEqual(plan[2], "list_files(path='.')")
+        self.assertEqual(plan[3], "task_complete()")
         
-        # Verify all expected messages
+        # Verify all expected [LLM-POWERED] messages
         messages = result_state.message_history
-        self.assertTrue(any("starting task decomposition" in msg for msg in messages))
-        self.assertTrue(any("Generated task decomposition prompt" in msg for msg in messages))
-        self.assertTrue(any("Successfully received decomposition from LLM" in msg for msg in messages))
-        self.assertTrue(any("Created plan with 4 subtasks" in msg for msg in messages))
-        self.assertTrue(any("completed task decomposition" in msg for msg in messages))
+        self.assertTrue(any("STRICT LLM-ONLY task decomposition" in msg for msg in messages))
+        self.assertTrue(any("Generated task decomposition prompt for LLM" in msg for msg in messages))
+        self.assertTrue(any("[LLM-POWERED] Successfully received decomposition from LLM" in msg for msg in messages))
+        self.assertTrue(any("[LLM-POWERED] Created tool-based plan with 4 steps" in msg for msg in messages))
+        self.assertTrue(any("completed STRICT LLM-ONLY task decomposition" in msg for msg in messages))
+        
+        # Ensure NO fallback or error messages
+        self.assertFalse(any("fallback" in msg.lower() for msg in messages))
+        self.assertFalse(any("[LLM-ERROR]" in msg for msg in messages))
     
-    def test_full_execution_cycle_with_llm_failure(self):
-        """Test full execution cycle with LLM failure and fallback."""
+    def test_full_execution_cycle_with_llm_failure_throws_error(self):
+        """Test full execution cycle with LLM failure throws LLMUnavailableError - NO FALLBACK."""
         state = State()
         state.data['goal'] = "Create hello.txt with Hello ONIKS! and display its content"
         
-        # Mock LLM failure
+        # Mock LLM failure - should result in LLMUnavailableError
         self.mock_llm_client.invoke.side_effect = Exception("Network error")
         
-        result_state = self.agent.execute(state)
+        with self.assertRaises(LLMUnavailableError) as context:
+            self.agent.execute(state)
         
-        # Verify fallback execution
-        self.assertIn('plan', result_state.data)
-        self.assertIn('decomposition_prompt', result_state.data)
+        # Verify error details
+        error = context.exception
+        self.assertIn("LLM decomposition failed", error.message)
+        self.assertIn("Network error", str(error.original_error))
+        self.assertIn("goal", error.request_details)
+        self.assertEqual(error.request_details["goal"], "Create hello.txt with Hello ONIKS! and display its content")
+    
+    def test_full_execution_cycle_with_invalid_llm_response_throws_error(self):
+        """Test full execution cycle with invalid LLM response throws LLMUnavailableError."""
+        state = State()
+        state.data['goal'] = "Valid goal for testing"
         
-        plan = result_state.data['plan']
-        self.assertGreater(len(plan), 0)
+        # Mock invalid LLM response (no tool calls)
+        self.mock_llm_client.invoke.return_value = "I cannot help with that request."
         
-        # Verify fallback messages
-        messages = result_state.message_history
-        self.assertTrue(any("Task decomposition failed" in msg for msg in messages))
-        self.assertTrue(any("Falling back to basic decomposition" in msg for msg in messages))
-        self.assertTrue(any("Created fallback plan" in msg for msg in messages))
+        with self.assertRaises(LLMUnavailableError) as context:
+            self.agent.execute(state)
+        
+        # Verify error details
+        error = context.exception
+        self.assertIn("LLM response parsing failed", error.message)
+        self.assertIn("no valid tool calls extracted", error.message)
+        self.assertIn("raw_response", error.request_details)
+    
+    def test_correlation_id_consistency_across_error_scenarios(self):
+        """Test that correlation IDs are consistent across different error scenarios."""
+        state = State()
+        state.data['goal'] = "Test goal"
+        
+        # Test 1: LLM connection error
+        self.mock_llm_client.invoke.side_effect = OllamaConnectionError("Connection error")
+        
+        with self.assertRaises(LLMUnavailableError) as context1:
+            self.agent.execute(state)
+        
+        error1 = context1.exception
+        self.assertIsNotNone(error1.correlation_id)
+        self.assertIn("agent_execution_id", error1.request_details)
+        self.assertEqual(error1.correlation_id, error1.request_details["agent_execution_id"])
+        
+        # Test 2: Empty LLM response
+        self.mock_llm_client.invoke.side_effect = None
+        self.mock_llm_client.invoke.return_value = ""
+        
+        with self.assertRaises(LLMUnavailableError) as context2:
+            self.agent.execute(state)
+        
+        error2 = context2.exception
+        self.assertIsNotNone(error2.correlation_id)
+        self.assertNotEqual(error1.correlation_id, error2.correlation_id)  # Different execution IDs
 
 
 if __name__ == '__main__':

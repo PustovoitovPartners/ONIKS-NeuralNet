@@ -3,6 +3,10 @@
 This module provides the PlannerAgent class, which serves as the task decomposition
 layer. It takes complex user goals and decomposes them into atomic, manageable subtasks
 that can be executed sequentially by the reasoning agent.
+
+This agent operates in STRICT LLM-ONLY mode - no fallbacks, no defaults, no caches.
+If the LLM is unavailable or fails, the agent throws a critical exception that
+stops the entire graph execution.
 """
 
 import json
@@ -13,6 +17,7 @@ from datetime import datetime
 from typing import List, Optional, TYPE_CHECKING
 
 from oniks.agents.base import BaseAgent
+from oniks.core.exceptions import LLMUnavailableError
 
 if TYPE_CHECKING:
     from oniks.core.state import State
@@ -24,16 +29,28 @@ logger = logging.getLogger(__name__)
 
 
 class PlannerAgent(BaseAgent):
-    """An intelligent agent that decomposes complex goals into tool-based execution plans.
+    """STRICT LLM-ONLY agent that decomposes complex goals into tool-based execution plans.
     
-    The PlannerAgent serves as the strategic entry point for task decomposition in the framework.
-    It analyzes complex, multi-step user goals and breaks them down into a structured
-    sequence of tool calls that can be executed by the ReasoningAgent. This approach makes
-    plans realistic and executable based on actual available tool capabilities.
+    CRITICAL: This agent operates in STRICT LLM-ONLY mode with NO FALLBACKS.
+    - If LLM is unavailable, agent throws LLMUnavailableError immediately
+    - If LLM returns HTTP error, agent throws LLMUnavailableError immediately  
+    - If LLM returns empty/invalid response, agent throws LLMUnavailableError immediately
+    - NO default plans, NO cached plans, NO hardcoded plans, NO silent degradation
     
-    The agent uses LLM-powered decomposition to create function call sequences
+    The agent uses ONLY LLM-powered decomposition to create function call sequences
     stored in state.data['plan'], where each step is a concrete tool invocation
     with specific arguments rather than abstract descriptions.
+    
+    SUCCESS CRITERIA:
+    - LLM must return HTTP 200 OK
+    - Response body must contain non-empty generated content
+    - Response content must be parseable into valid tool calls
+    - Only then is the operation tagged as [LLM-POWERED]
+    
+    FAILURE BEHAVIOR:
+    - ANY other condition results in LLMUnavailableError
+    - Error is tagged as [LLM-ERROR] with full error details
+    - Graph execution stops immediately
     
     Attributes:
         llm_client: OllamaClient instance for LLM interactions.
@@ -48,7 +65,8 @@ class PlannerAgent(BaseAgent):
         >>> agent = PlannerAgent("planner", llm_client, tools)
         >>> state = State()
         >>> state.data['goal'] = 'Create file hello.txt with Hello ONIKS!, then display it'
-        >>> result_state = agent.execute(state)
+        >>> # This will either succeed with [LLM-POWERED] plan or fail with LLMUnavailableError
+        >>> result_state = agent.execute(state)  # May raise LLMUnavailableError
         >>> print(result_state.data['plan'])
         [
             "write_file(file_path='hello.txt', content='Hello ONIKS!')",
@@ -85,108 +103,176 @@ class PlannerAgent(BaseAgent):
         self.available_tools = available_tools
     
     def execute(self, state: "State") -> "State":
-        """Execute tool-based task decomposition logic to create an executable plan.
+        """Execute STRICT LLM-ONLY task decomposition logic to create an executable plan.
         
-        This method implements the core tool-based planning logic of the agent:
-        1. Extracts the high-level goal from state.data['goal']
-        2. Builds a list of available tools with their descriptions
-        3. Generates a structured prompt for LLM-powered tool-based decomposition
-        4. Invokes the LLM to create a sequence of tool calls
-        5. Parses the LLM response to extract the tool call sequence
-        6. Stores the plan in state.data['plan'] as a list of function call strings
-        7. Adds a final task_complete() call to ensure completion detection
+        CRITICAL: This method operates in STRICT LLM-ONLY mode with NO FALLBACKS.
+        
+        The method:
+        1. Validates that a goal exists (fails immediately if not)
+        2. Generates a structured prompt for LLM-powered tool-based decomposition
+        3. Invokes the LLM with strict validation (HTTP 200 + non-empty content)
+        4. Parses and validates the LLM response
+        5. Creates tool call sequence ONLY from successful LLM response
+        6. Tags operation as [LLM-POWERED] ONLY on complete success
+        
+        FAILURE CONDITIONS (all throw LLMUnavailableError):
+        - No goal in state
+        - LLM connection failure
+        - LLM HTTP error response
+        - Empty or invalid LLM response content
+        - Unparseable LLM response
         
         Args:
             state: The current state containing the goal to decompose.
             
         Returns:
-            The modified state with the tool-based plan in state.data['plan'].
+            The modified state with the LLM-generated plan in state.data['plan'].
+            
+        Raises:
+            LLMUnavailableError: If LLM is unavailable or returns invalid response.
         """
         # Create a copy of the state to avoid modifying the original
         result_state = state.model_copy(deep=True)
-        
-        # Add message about planner execution
-        result_state.add_message(f"Planner agent {self.name} starting task decomposition")
-        
-        # Extract the high-level goal
-        goal = result_state.data.get('goal', '')
-        
-        if not goal:
-            result_state.add_message("No goal found in state data")
-            # Provide empty plan as fallback
-            result_state.data['plan'] = []
-            return result_state
-        
-        # Generate structured prompt for task decomposition
-        decomposition_prompt = self._generate_decomposition_prompt(goal)
-        result_state.data['decomposition_prompt'] = decomposition_prompt
-        
-        result_state.add_message("Generated task decomposition prompt")
         
         # Generate unique agent execution ID for correlation
         agent_execution_id = str(uuid.uuid4())[:8]
         timestamp = datetime.now().isoformat()
         
-        # BULLETPROOF LOGGING: Log agent execution start
-        logger.info(f"[PLANNER-{agent_execution_id}] Starting LLM-powered decomposition at {timestamp}")
+        # Add message about planner execution
+        result_state.add_message(f"Planner agent {self.name} starting STRICT LLM-ONLY task decomposition")
+        
+        # CRITICAL: Extract and validate the goal - fail immediately if missing
+        goal = result_state.data.get('goal', '').strip()
+        
+        if not goal:
+            error_msg = "No goal found in state data - cannot proceed without goal"
+            logger.error(f"[LLM-ERROR-{agent_execution_id}] {error_msg}")
+            result_state.add_message(f"[LLM-ERROR] {error_msg}")
+            
+            raise LLMUnavailableError(
+                message="Goal validation failed - no goal provided",
+                request_details={
+                    "agent_execution_id": agent_execution_id,
+                    "state_data_keys": list(result_state.data.keys()),
+                    "goal_value": goal
+                },
+                correlation_id=agent_execution_id
+            )
+        
+        # BULLETPROOF LOGGING: Log strict LLM-only operation start
+        logger.info(f"[PLANNER-{agent_execution_id}] Starting STRICT LLM-ONLY decomposition at {timestamp}")
         logger.info(f"[PLANNER-{agent_execution_id}] Goal to decompose: {goal}")
         logger.info(f"[PLANNER-{agent_execution_id}] Available tools: {[tool.name for tool in self.available_tools]}")
+        logger.info(f"[PLANNER-{agent_execution_id}] NO FALLBACKS - LLM must succeed or operation fails")
         
-        # Invoke LLM to get task decomposition
+        # Generate structured prompt for task decomposition
+        decomposition_prompt = self._generate_decomposition_prompt(goal)
+        result_state.data['decomposition_prompt'] = decomposition_prompt
+        
+        result_state.add_message("Generated task decomposition prompt for LLM")
+        
+        # CRITICAL: Invoke LLM with strict validation - fail immediately on any error
         try:
-            logger.info(f"[PLANNER-{agent_execution_id}] Calling LLM for task decomposition")
+            logger.info(f"[PLANNER-{agent_execution_id}] Calling LLM for task decomposition (STRICT MODE)")
+            
+            # Call LLM - this may throw OllamaConnectionError or other exceptions
             raw_llm_response = self.llm_client.invoke(decomposition_prompt)
+            
+            # STRICT VALIDATION: Validate LLM response is non-empty and usable
+            if not raw_llm_response or not isinstance(raw_llm_response, str) or not raw_llm_response.strip():
+                error_msg = "LLM returned empty or invalid response content"
+                logger.error(f"[LLM-ERROR-{agent_execution_id}] {error_msg}")
+                logger.error(f"[LLM-ERROR-{agent_execution_id}] Raw response: {repr(raw_llm_response)}")
+                result_state.add_message(f"[LLM-ERROR] {error_msg}")
+                
+                raise LLMUnavailableError(
+                    message="LLM response validation failed - empty or invalid content",
+                    request_details={
+                        "agent_execution_id": agent_execution_id,
+                        "goal": goal,
+                        "response_type": type(raw_llm_response).__name__,
+                        "response_length": len(raw_llm_response) if raw_llm_response else 0,
+                        "response_repr": repr(raw_llm_response)
+                    },
+                    correlation_id=agent_execution_id
+                )
+            
             result_state.data['decomposition_response'] = raw_llm_response
             
-            # BULLETPROOF LOGGING: Log successful LLM response
-            success_timestamp = datetime.now().isoformat()
-            logger.info(f"[PLANNER-{agent_execution_id}] LLM decomposition completed at {success_timestamp}")
-            result_state.add_message(f"[LLM-POWERED] Successfully received decomposition from LLM (execution: {agent_execution_id})")
-            
-            # Parse the LLM response to extract tool call sequence
+            # STRICT VALIDATION: Parse the LLM response to extract tool call sequence
             tool_call_list = self._parse_decomposition_response(raw_llm_response)
             
-            # Add final task_complete() call
+            # STRICT VALIDATION: Ensure we got valid tool calls
+            if not tool_call_list:
+                error_msg = "LLM response produced no valid tool calls"
+                logger.error(f"[LLM-ERROR-{agent_execution_id}] {error_msg}")
+                logger.error(f"[LLM-ERROR-{agent_execution_id}] Raw response: {raw_llm_response}")
+                result_state.add_message(f"[LLM-ERROR] {error_msg}")
+                
+                raise LLMUnavailableError(
+                    message="LLM response parsing failed - no valid tool calls extracted",
+                    request_details={
+                        "agent_execution_id": agent_execution_id,
+                        "goal": goal,
+                        "raw_response": raw_llm_response,
+                        "parsed_tool_calls": tool_call_list
+                    },
+                    correlation_id=agent_execution_id
+                )
+            
+            # SUCCESS: Add final task_complete() call
             tool_call_list.append("task_complete()")
             
-            # Store the plan in state
+            # SUCCESS: Store the LLM-generated plan in state
             result_state.data['plan'] = tool_call_list
+            
+            # BULLETPROOF LOGGING: Log successful LLM-powered operation
+            success_timestamp = datetime.now().isoformat()
+            logger.info(f"[PLANNER-{agent_execution_id}] LLM decomposition completed successfully at {success_timestamp}")
+            result_state.add_message(f"[LLM-POWERED] Successfully received decomposition from LLM (execution: {agent_execution_id})")
             result_state.add_message(f"[LLM-POWERED] Created tool-based plan with {len(tool_call_list)} steps")
             
-            # Log the created plan for debugging
-            logger.info(f"[PLANNER-{agent_execution_id}] Generated plan with {len(tool_call_list)} steps:")
+            # Log the LLM-generated plan for debugging
+            logger.info(f"[PLANNER-{agent_execution_id}] LLM-generated plan with {len(tool_call_list)} steps:")
             for i, tool_call in enumerate(tool_call_list, 1):
                 result_state.add_message(f"  [LLM-POWERED] Step {i}: {tool_call}")
-                logger.info(f"[PLANNER-{agent_execution_id}] Step {i}: {tool_call}")
+                logger.info(f"[PLANNER-{agent_execution_id}] [LLM-POWERED] Step {i}: {tool_call}")
             
-            logger.info(f"[PLANNER-{agent_execution_id}] LLM-powered decomposition completed successfully")
+            logger.info(f"[PLANNER-{agent_execution_id}] STRICT LLM-ONLY decomposition completed successfully")
+            
+        except LLMUnavailableError:
+            # Re-raise our own LLMUnavailableError without modification
+            raise
             
         except Exception as e:
-            # BULLETPROOF LOGGING: Log complete error details
+            # BULLETPROOF LOGGING: Log complete error details and convert to LLMUnavailableError
             error_timestamp = datetime.now().isoformat()
-            logger.error(f"[PLANNER-{agent_execution_id}] LLM decomposition failed at {error_timestamp}")
-            logger.error(f"[PLANNER-{agent_execution_id}] Error type: {type(e).__name__}")
-            logger.error(f"[PLANNER-{agent_execution_id}] Error message: {str(e)}")
-            logger.error(f"[PLANNER-{agent_execution_id}] FULL ERROR TRACEBACK BEGINS:")
-            logger.error(f"[PLANNER-{agent_execution_id}] {traceback.format_exc()}")
-            logger.error(f"[PLANNER-{agent_execution_id}] FULL ERROR TRACEBACK ENDS")
+            logger.error(f"[LLM-ERROR-{agent_execution_id}] LLM decomposition failed at {error_timestamp}")
+            logger.error(f"[LLM-ERROR-{agent_execution_id}] Error type: {type(e).__name__}")
+            logger.error(f"[LLM-ERROR-{agent_execution_id}] Error message: {str(e)}")
+            logger.error(f"[LLM-ERROR-{agent_execution_id}] FULL ERROR TRACEBACK BEGINS:")
+            logger.error(f"[LLM-ERROR-{agent_execution_id}] {traceback.format_exc()}")
+            logger.error(f"[LLM-ERROR-{agent_execution_id}] FULL ERROR TRACEBACK ENDS")
+            logger.error(f"[LLM-ERROR-{agent_execution_id}] STRICT MODE: NO FALLBACKS - FAILING IMMEDIATELY")
             
-            result_state.add_message(f"[ERROR] Task decomposition failed: {str(e)} (execution: {agent_execution_id})")
-            result_state.add_message(f"[FALLBACK-REASONING] Falling back to hardcoded decomposition logic")
+            result_state.add_message(f"[LLM-ERROR] Task decomposition failed: {str(e)} (execution: {agent_execution_id})")
+            result_state.add_message(f"[LLM-ERROR] STRICT MODE: No fallbacks available - operation failed")
             
-            # Fall back to basic decomposition if LLM fails
-            logger.warning(f"[PLANNER-{agent_execution_id}] Switching to fallback reasoning")
-            fallback_plan = self._perform_basic_decomposition(goal)
-            result_state.data['plan'] = fallback_plan
-            result_state.add_message(f"[FALLBACK-REASONING] Created hardcoded plan with {len(fallback_plan)} subtasks")
-            
-            # Log fallback plan details
-            logger.info(f"[PLANNER-{agent_execution_id}] Fallback plan with {len(fallback_plan)} steps:")
-            for i, task in enumerate(fallback_plan, 1):
-                result_state.add_message(f"  [FALLBACK-REASONING] Step {i}: {task}")
-                logger.info(f"[PLANNER-{agent_execution_id}] Fallback Step {i}: {task}")
+            # Convert all other exceptions to LLMUnavailableError
+            raise LLMUnavailableError(
+                message=f"LLM decomposition failed: {str(e)}",
+                original_error=e,
+                request_details={
+                    "agent_execution_id": agent_execution_id,
+                    "goal": goal,
+                    "error_type": type(e).__name__,
+                    "error_message": str(e),
+                    "timestamp": error_timestamp
+                },
+                correlation_id=agent_execution_id
+            ) from e
         
-        result_state.add_message(f"Planner agent {self.name} completed task decomposition")
+        result_state.add_message(f"Planner agent {self.name} completed STRICT LLM-ONLY task decomposition")
         
         return result_state
     
@@ -307,122 +393,28 @@ Create a sequence of tool calls to achieve the goal:"""
         logger.info(f"Parsed {len(tool_calls)} tool calls from decomposition response")
         return tool_calls
     
-    def _perform_basic_decomposition(self, goal: str) -> List[str]:
-        """Perform basic fallback decomposition when LLM is unavailable.
-        
-        This method implements simple hardcoded decomposition logic as a fallback
-        when the LLM service is unavailable or encounters errors.
-        
-        ALL PLANS GENERATED BY THIS METHOD ARE CLEARLY MARKED AS [FALLBACK-REASONING]
-        TO DISTINGUISH FROM REAL LLM-POWERED DECOMPOSITION.
-        
-        Args:
-            goal: The high-level goal to decompose.
-            
-        Returns:
-            List of basic subtasks based on pattern matching.
-        """  
-        # BULLETPROOF LOGGING: Log fallback reasoning activation
-        fallback_id = str(uuid.uuid4())[:8]
-        logger.warning(f"[FALLBACK-{fallback_id}] USING HARDCODED FALLBACK REASONING - NO LLM INVOLVED")
-        logger.warning(f"[FALLBACK-{fallback_id}] Goal to decompose: {goal}")
-        original_goal = goal
-        if not isinstance(goal, str):
-            goal = str(goal) if goal is not None else ""
-        
-        goal_lower = goal.lower()
-        
-        # Handle the common demo case
-        if ("create" in goal_lower and "hello.txt" in goal_lower and 
-            "hello oniks" in goal_lower and "display" in goal_lower):
-            plan = [
-                "write_file(file_path='hello.txt', content='Hello ONIKS!')",
-                "execute_bash_command(command='cat hello.txt')",
-                "task_complete()"
-            ]
-            logger.warning(f"[FALLBACK-{fallback_id}] Generated demo plan: {plan}")
-            return plan
-        
-        # Handle directory creation with file creation
-        if ("create" in goal_lower and "directory" in goal_lower and 
-            "output" in goal_lower and "log.txt" in goal_lower and
-            "system test ok" in goal_lower):
-            plan = [
-                "create_directory(path='output')",
-                "write_file(file_path='output/log.txt', content='System test OK')",
-                "task_complete()"
-            ]
-            logger.warning(f"[FALLBACK-{fallback_id}] Generated directory creation plan: {plan}")
-            return plan
-        
-        # Handle simple file operations
-        if "create" in goal_lower and "file" in goal_lower:
-            if "display" in goal_lower or "show" in goal_lower:
-                filename = "example.txt"
-                content = "Example content"
-                # Try to extract filename from goal
-                import re
-                file_match = re.search(r'(\w+\.\w+)', goal)
-                if file_match:
-                    filename = file_match.group(1)
-                
-                plan = [
-                    f"write_file(file_path='{filename}', content='{content}')",
-                    f"execute_bash_command(command='cat {filename}')",
-                    "task_complete()"
-                ]
-                logger.warning(f"[FALLBACK-{fallback_id}] Generated file creation with display plan: {plan}")
-                return plan
-            else:
-                plan = [
-                    "write_file(file_path='example.txt', content='Example content')",
-                    "task_complete()"
-                ]
-                logger.warning(f"[FALLBACK-{fallback_id}] Generated simple file creation plan: {plan}")
-                return plan
-        
-        # Handle read operations
-        if "read" in goal_lower and "file" in goal_lower:
-            filename = "task.txt"
-            import re
-            file_match = re.search(r'(\w+\.\w+)', goal)
-            if file_match:
-                filename = file_match.group(1)
-            
-            plan = [
-                f"read_file(file_path='{filename}')",
-                "task_complete()"
-            ]
-            logger.warning(f"[FALLBACK-{fallback_id}] Generated file read plan: {plan}")
-            return plan
-        
-        # Generic fallback - try to create at least one meaningful tool call
-        plan = [
-            "task_complete()"
-        ]
-        logger.warning(f"[FALLBACK-{fallback_id}] No pattern matched - generated minimal plan: {plan}")
-        return plan
     
     def _is_valid_tool_call(self, tool_call: str) -> bool:
         """Validate if a string represents a valid tool call format.
         
-        Checks if the tool call string follows proper function call syntax
-        and references an available tool. This method validates both the
-        format and the tool name against the available tools list.
+        In STRICT LLM-ONLY mode, this method validates that the LLM response
+        contains properly formatted function calls. It does NOT validate tool
+        availability - that happens at execution time. We trust the LLM to
+        generate appropriate tool calls based on the prompt.
         
         Args:
             tool_call: String to validate as a tool call.
             
         Returns:
-            True if the string is a valid tool call, False otherwise.
+            True if the string is a valid function call format, False otherwise.
             
         Example:
-            >>> agent = PlannerAgent("test", llm_client, [WriteFileTool()])
+            >>> agent = PlannerAgent("test", llm_client, [])
             >>> agent._is_valid_tool_call("write_file(file_path='test.txt', content='Hello')")
             True
             >>> agent._is_valid_tool_call("invalid_syntax(")
             False
-            >>> agent._is_valid_tool_call("unknown_tool()")
+            >>> agent._is_valid_tool_call("just some text")
             False
         """
         if not isinstance(tool_call, str) or not tool_call.strip():
@@ -438,16 +430,16 @@ Create a sequence of tool calls to achieve the goal:"""
         
         tool_name = match.group(1)
         
-        # Check if the tool name exists in our available tools
-        available_tool_names = [tool.name for tool in self.available_tools]
+        # In STRICT LLM-ONLY mode, we accept any well-formed function call
+        # The LLM is responsible for generating appropriate tool calls
+        # Tool availability is checked at execution time, not parsing time
         
         # Always allow task_complete as it's a standard completion tool
         if tool_name == 'task_complete':
             return True
-            
-        if tool_name not in available_tool_names:
-            logger.warning(f"Tool '{tool_name}' not found in available tools: {available_tool_names}")
-            return False
+        
+        # Allow any valid function call format - trust the LLM
+        # This enables the LLM to suggest tools that might be available
         
         # Try to parse the arguments to ensure valid syntax
         try:
@@ -463,7 +455,6 @@ Create a sequence of tool calls to achieve the goal:"""
                 return True
             
             # Try to parse as function call arguments
-            # This is a basic check - we use eval in a controlled way
             try:
                 # Create a dummy function call and try to parse it
                 dummy_call = f"dummy_func({args_str})"
@@ -486,5 +477,5 @@ Create a sequence of tool calls to achieve the goal:"""
                 return False
                 
         except Exception as e:
-            logger.warning(f"Error validating tool call '{tool_call}': {e}")
+            logger.warning(f"Error validating tool call syntax '{tool_call}': {e}")
             return False

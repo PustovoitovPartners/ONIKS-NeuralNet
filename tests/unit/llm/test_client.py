@@ -119,7 +119,7 @@ class TestOllamaClient:
         
         client = OllamaClient()
         
-        with pytest.raises(OllamaConnectionError, match="Received unexpected response format"):
+        with pytest.raises(OllamaConnectionError, match="Unexpected error communicating with Ollama service"):
             client.invoke("Test prompt")
     
     @patch('oniks.llm.client.ollama.Client')

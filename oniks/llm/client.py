@@ -108,25 +108,54 @@ class OllamaClient:
                 }
             )
             
-            # Extract the message content from the response
-            if 'message' in response and 'content' in response['message']:
-                content = response['message']['content'].strip()
-                
-                # BULLETPROOF LOGGING: Log complete response details
-                response_timestamp = datetime.now().isoformat()
-                logger.info(f"[LLM-RESPONSE-{request_id}] LLM call completed at {response_timestamp}")
-                logger.info(f"[LLM-RESPONSE-{request_id}] Response length: {len(content)} characters")
-                logger.info(f"[LLM-RESPONSE-{request_id}] FULL RESPONSE BEGINS:")
-                logger.info(f"[LLM-RESPONSE-{request_id}] {content}")
-                logger.info(f"[LLM-RESPONSE-{request_id}] FULL RESPONSE ENDS")
-                logger.info(f"[LLM-SUCCESS-{request_id}] LLM call completed successfully")
-                
-                return content
-            else:
-                # BULLETPROOF LOGGING: Log unexpected response format with full details
-                logger.error(f"[LLM-ERROR-{request_id}] Unexpected response format from Ollama")
+            # STRICT VALIDATION: Validate response structure and content
+            if not response or not isinstance(response, dict):
+                logger.error(f"[LLM-ERROR-{request_id}] Invalid response type from Ollama")
+                logger.error(f"[LLM-ERROR-{request_id}] Response type: {type(response)}")
+                logger.error(f"[LLM-ERROR-{request_id}] Response value: {response}")
+                raise OllamaConnectionError("Received invalid response type from Ollama")
+            
+            # STRICT VALIDATION: Extract and validate message content
+            if 'message' not in response:
+                logger.error(f"[LLM-ERROR-{request_id}] No 'message' field in Ollama response")
+                logger.error(f"[LLM-ERROR-{request_id}] Available fields: {list(response.keys())}")
                 logger.error(f"[LLM-ERROR-{request_id}] FULL RESPONSE DUMP: {response}")
-                raise OllamaConnectionError("Received unexpected response format from Ollama")
+                raise OllamaConnectionError("Ollama response missing 'message' field")
+            
+            message = response['message']
+            if not isinstance(message, dict) or 'content' not in message:
+                logger.error(f"[LLM-ERROR-{request_id}] Invalid message structure in Ollama response")
+                logger.error(f"[LLM-ERROR-{request_id}] Message type: {type(message)}")
+                logger.error(f"[LLM-ERROR-{request_id}] Message fields: {list(message.keys()) if isinstance(message, dict) else 'Not a dict'}")
+                logger.error(f"[LLM-ERROR-{request_id}] FULL RESPONSE DUMP: {response}")
+                raise OllamaConnectionError("Ollama response message missing 'content' field")
+            
+            content = message['content']
+            
+            # STRICT VALIDATION: Ensure content is a non-empty string
+            if not isinstance(content, str):
+                logger.error(f"[LLM-ERROR-{request_id}] Invalid content type in Ollama response")
+                logger.error(f"[LLM-ERROR-{request_id}] Content type: {type(content)}")
+                logger.error(f"[LLM-ERROR-{request_id}] Content value: {content}")
+                raise OllamaConnectionError("Ollama response content is not a string")
+            
+            content = content.strip()
+            
+            if not content:
+                logger.error(f"[LLM-ERROR-{request_id}] Empty content in Ollama response")
+                logger.error(f"[LLM-ERROR-{request_id}] Original content: {repr(message['content'])}")
+                raise OllamaConnectionError("Ollama response content is empty")
+            
+            # SUCCESS: Log complete response details
+            response_timestamp = datetime.now().isoformat()
+            logger.info(f"[LLM-RESPONSE-{request_id}] LLM call completed at {response_timestamp}")
+            logger.info(f"[LLM-RESPONSE-{request_id}] Response length: {len(content)} characters")
+            logger.info(f"[LLM-RESPONSE-{request_id}] FULL RESPONSE BEGINS:")
+            logger.info(f"[LLM-RESPONSE-{request_id}] {content}")
+            logger.info(f"[LLM-RESPONSE-{request_id}] FULL RESPONSE ENDS")
+            logger.info(f"[LLM-SUCCESS-{request_id}] LLM call completed successfully - HTTP 200 + valid content")
+            
+            return content
                 
         except ResponseError as e:
             # BULLETPROOF LOGGING: Log complete error details with full traceback
