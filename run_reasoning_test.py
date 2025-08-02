@@ -30,7 +30,7 @@ from oniks.core.graph import Graph, ToolNode
 from oniks.core.state import State
 from oniks.core.checkpoint import SQLiteCheckpointSaver
 from typing import Set, List, Dict, Optional
-from oniks.tools.file_tools import ReadFileTool
+from oniks.tools.file_tools import ReadFileTool, FileSearchReplaceTool
 from oniks.tools.fs_tools import ListFilesTool, WriteFileTool, CreateDirectoryTool
 from oniks.tools.shell_tools import ExecuteBashCommandTool
 from oniks.tools.core_tools import TaskCompleteTool
@@ -160,17 +160,16 @@ class MultiStepGraph(Graph):
 
 def cleanup_demo_files() -> None:
     """Clean up any existing demo files and directories before starting."""
-    demo_file_path = project_root / "hello.txt"
-    output_dir_path = project_root / "output"
+    demo_file_path = project_root / "hello_oniks.py"
+    demo_backup_path = project_root / "hello_oniks.py.bak"
     
     if demo_file_path.exists():
         demo_file_path.unlink()
         print(f"Cleaned up existing demo file: {demo_file_path}")
     
-    if output_dir_path.exists():
-        # Remove the entire output directory and its contents
-        shutil.rmtree(output_dir_path)
-        print(f"Cleaned up existing output directory: {output_dir_path}")
+    if demo_backup_path.exists():
+        demo_backup_path.unlink()
+        print(f"Cleaned up existing backup file: {demo_backup_path}")
 
 
 def main() -> None:
@@ -189,7 +188,7 @@ def main() -> None:
     # Create initial state with complex goal for hierarchical planning
     print("2. Creating initial state with complex goal for hierarchical planning...")
     initial_state = State()
-    initial_state.data['goal'] = "Create a directory named 'output', and inside it, create a file 'log.txt' with the text 'System test OK'"
+    initial_state.data['goal'] = "First, create a Python file named 'hello_oniks.py' that contains the code 'print(\"Hello ONIKS\")'. Second, use the edit_file tool to refactor that file, replacing the string 'Hello ONIKS' with 'K Prize Mission Ready!'. Finally, execute the refactored script."
     initial_state.add_message("Demo started with complex goal that will be decomposed into atomic subtasks")
     
     print(f"   Goal: {initial_state.data['goal']}")
@@ -201,8 +200,9 @@ def main() -> None:
     create_directory_tool = CreateDirectoryTool()
     execute_bash_tool = ExecuteBashCommandTool()
     task_complete_tool = TaskCompleteTool()
+    edit_file_tool = FileSearchReplaceTool()
     
-    tools = [list_files_tool, write_file_tool, create_directory_tool, execute_bash_tool, task_complete_tool]
+    tools = [list_files_tool, write_file_tool, create_directory_tool, execute_bash_tool, task_complete_tool, edit_file_tool]
     
     for tool in tools:
         print(f"   Created tool: {tool.name}")
@@ -235,8 +235,9 @@ def main() -> None:
     create_directory_node = ToolNode("create_directory", create_directory_tool)
     execute_bash_node = ToolNode("execute_bash_command", execute_bash_tool)
     task_complete_node = ToolNode("task_complete", task_complete_tool)
+    edit_file_node = ToolNode("file_search_replace", edit_file_tool)
     
-    tool_nodes = [list_files_node, write_file_node, create_directory_node, execute_bash_node, task_complete_node]
+    tool_nodes = [list_files_node, write_file_node, create_directory_node, execute_bash_node, task_complete_node, edit_file_node]
     
     print(f"   Created planner agent: {planner_agent.name}")
     print(f"   Created reasoning agent: {reasoning_agent.name}")
@@ -288,6 +289,12 @@ def main() -> None:
         condition=lambda state: state.data.get('next_tool') == 'task_complete'
     )
     
+    graph.add_edge(
+        "reasoning_agent", 
+        "file_search_replace",
+        condition=lambda state: state.data.get('next_tool') == 'file_search_replace'
+    )
+    
     # Add edges from all tool nodes back to reasoning agent for next step analysis
     # Each tool node can transition back to reasoning agent (except task_complete which is terminal)
     # But first remove the completed task from the plan
@@ -329,6 +336,12 @@ def main() -> None:
     
     graph.add_edge(
         "execute_bash_command",
+        "reasoning_agent",
+        condition=create_plan_progression_condition()
+    )
+    
+    graph.add_edge(
+        "file_search_replace",
         "reasoning_agent",
         condition=create_plan_progression_condition()
     )
@@ -408,26 +421,29 @@ def main() -> None:
         if task_completed:
             print("   ✅ Task completion tool executed successfully")
             
-            # Verify the output directory was created
-            output_dir = project_root / "output"
-            if output_dir.exists() and output_dir.is_dir():
-                print("   ✅ Directory 'output' created successfully")
+            # Verify the hello_oniks.py file was created
+            python_file = project_root / "hello_oniks.py"
+            if python_file.exists():
+                print("   ✅ File 'hello_oniks.py' created successfully")
                 
-                # Verify the log.txt file was created inside the output directory
-                log_file = output_dir / "log.txt"
-                if log_file.exists():
-                    with open(log_file, 'r', encoding='utf-8') as f:
-                        content = f.read().strip()
-                    if content == "System test OK":
-                        print("   ✅ File 'output/log.txt' created with correct content")
+                # Verify the file content has been edited correctly
+                with open(python_file, 'r', encoding='utf-8') as f:
+                    content = f.read().strip()
+                if 'K Prize Mission Ready!' in content and 'print(' in content:
+                    print("   ✅ File 'hello_oniks.py' edited with correct content")
+                    
+                    # Check if the script was executed (should be in tool outputs)
+                    execute_output = final_state.tool_outputs.get('execute_bash_command', '')
+                    if 'K Prize Mission Ready!' in str(execute_output):
+                        print("   ✅ Python script executed successfully with correct output")
                     else:
-                        print(f"   ❌ File 'output/log.txt' has incorrect content: {content}")
+                        print(f"   ❌ Python script execution output incorrect: {execute_output}")
                         error_found = True
                 else:
-                    print("   ❌ File 'output/log.txt' was not created")
+                    print(f"   ❌ File 'hello_oniks.py' has incorrect content: {content}")
                     error_found = True
             else:
-                print("   ❌ Directory 'output' was not created")
+                print("   ❌ File 'hello_oniks.py' was not created")
                 error_found = True
         else:
             print("   ❌ Task completion tool was not executed")
@@ -471,12 +487,12 @@ def main() -> None:
         print("   Removed checkpoint database")
     
     # Keep the demo files for user inspection
-    output_dir = project_root / "output"
-    if output_dir.exists():
-        print(f"   Demo directory preserved for inspection: {output_dir}")
-        log_file = output_dir / "log.txt"
-        if log_file.exists():
-            print(f"   Demo file preserved for inspection: {log_file}")
+    python_file = project_root / "hello_oniks.py"
+    if python_file.exists():
+        print(f"   Demo file preserved for inspection: {python_file}")
+    backup_file = project_root / "hello_oniks.py.bak"
+    if backup_file.exists():
+        print(f"   Backup file preserved for inspection: {backup_file}")
 
 
 if __name__ == "__main__":
