@@ -78,7 +78,7 @@ class PlannerAgent(BaseAgent):
         ]
     """
     
-    def __init__(self, name: str, llm_client: "OllamaClient", available_tools: Optional[List["Tool"]] = None, timeout_seconds: float = 60.0) -> None:
+    def __init__(self, name: str, llm_client: "OllamaClient", available_tools: Optional[List["Tool"]] = None, timeout_seconds: float = 1200.0) -> None:
         """Initialize the PlannerAgent with LLM client and available tools.
         
         Args:
@@ -87,7 +87,7 @@ class PlannerAgent(BaseAgent):
             available_tools: List of Tool instances that can be used in plans.
                            If None, defaults to empty list.
             timeout_seconds: Maximum time allowed for planning cycle in seconds.
-                           Defaults to 60.0 seconds.
+                           Defaults to 1200.0 seconds.
             
         Raises:
             ValueError: If name is empty, None, llm_client is None, or timeout_seconds is not positive.
