@@ -191,7 +191,7 @@ def main() -> None:
     # Create initial state with complex goal for hierarchical planning
     print("2. Creating initial state with complex goal for hierarchical planning...")
     initial_state = State()
-    initial_state.data['goal'] = "First, create a Python file named 'hello_oniks.py' that contains the code 'print(\"Hello ONIKS\")'. Second, use the edit_file tool to refactor that file, replacing the string 'Hello ONIKS' with 'K Prize Mission Ready!'. Finally, execute the refactored script."
+    initial_state.data['goal'] = "First, create a backup of the main application file 'app.py' by copying it to 'app.py.bak'. Then, refactor the original 'app.py' by replacing all occurrences of the old function name 'get_data' with the new name 'fetch_user_data'. After the refactoring is complete, create a new directory called 'archive' and move the backup file 'app.py.bak' into it."
     initial_state.add_message("Demo started with complex goal that will be decomposed into atomic subtasks")
     
     print(f"   Goal: {initial_state.data['goal']}")
