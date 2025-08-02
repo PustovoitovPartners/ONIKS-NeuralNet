@@ -7,12 +7,13 @@ CRITICAL: These tests verify that PlannerAgent operates in STRICT LLM-ONLY mode
 with NO FALLBACKS. Any LLM failure must result in LLMUnavailableError.
 """
 
+import time
 import unittest
 from unittest.mock import Mock, patch, MagicMock
 
 from oniks.agents.planner_agent import PlannerAgent
 from oniks.core.state import State
-from oniks.core.exceptions import LLMUnavailableError
+from oniks.core.exceptions import LLMUnavailableError, PlanningTimeoutError
 from oniks.llm.client import OllamaClient, OllamaConnectionError
 
 
@@ -29,6 +30,25 @@ class TestPlannerAgentInitialization(unittest.TestCase):
         
         self.assertEqual(agent.name, "planner")
         self.assertEqual(agent.llm_client, self.mock_llm_client)
+        self.assertEqual(agent.timeout_seconds, 60.0)  # Default timeout
+    
+    def test_planner_agent_initialization_with_custom_timeout(self):
+        """Test initialization with custom timeout."""
+        agent = PlannerAgent("planner", self.mock_llm_client, timeout_seconds=30.0)
+        
+        self.assertEqual(agent.timeout_seconds, 30.0)
+    
+    def test_planner_agent_initialization_invalid_timeout_raises_error(self):
+        """Test that invalid timeout raises ValueError."""
+        with self.assertRaises(ValueError) as context:
+            PlannerAgent("planner", self.mock_llm_client, timeout_seconds=0)
+        
+        self.assertIn("Timeout seconds must be a positive number", str(context.exception))
+        
+        with self.assertRaises(ValueError) as context:
+            PlannerAgent("planner", self.mock_llm_client, timeout_seconds=-5)
+        
+        self.assertIn("Timeout seconds must be a positive number", str(context.exception))
     
     def test_planner_agent_initialization_empty_name_raises_error(self):
         """Test that empty name raises ValueError."""
@@ -266,12 +286,12 @@ class TestPlannerAgentPromptGeneration(unittest.TestCase):
         prompt = self.agent._generate_decomposition_prompt(goal)
         
         # Verify prompt contains key sections
-        self.assertIn("TASK DECOMPOSITION REQUEST", prompt)
-        self.assertIn("GOAL TO DECOMPOSE", prompt)
+        self.assertIn("MANDATORY SEQUENTIAL TASK DECOMPOSITION", prompt)
+        self.assertIn("GOAL TO ACHIEVE", prompt)
         self.assertIn(goal, prompt)
-        self.assertIn("DECOMPOSITION RULES", prompt)
+        self.assertIn("MANDATORY SEQUENTIAL EXECUTION RULES", prompt)
         self.assertIn("OUTPUT FORMAT", prompt)
-        self.assertIn("EXAMPLES", prompt)
+        self.assertIn("MANDATORY EXAMPLES", prompt)
     
     def test_generate_decomposition_prompt_with_complex_goal(self):
         """Test prompt generation with complex goal."""
@@ -280,8 +300,8 @@ class TestPlannerAgentPromptGeneration(unittest.TestCase):
         prompt = self.agent._generate_decomposition_prompt(goal)
         
         self.assertIn(goal, prompt)
-        self.assertIn("atomic", prompt.lower())
-        self.assertIn("specific", prompt.lower())
+        self.assertIn("mandatory", prompt.lower())
+        self.assertIn("sequential", prompt.lower())
 
 
 class TestPlannerAgentResponseParsing(unittest.TestCase):
@@ -293,69 +313,69 @@ class TestPlannerAgentResponseParsing(unittest.TestCase):
         self.agent = PlannerAgent("planner", self.mock_llm_client)
     
     def test_parse_decomposition_response_numbered_list(self):
-        """Test parsing numbered list response."""
-        response = """1. Create a file named 'test.txt' with content 'Hello'
-2. Display the content of 'test.txt'
-3. Delete the file 'test.txt'"""
+        """Test parsing numbered list response with function calls."""
+        response = """1. write_file(file_path='test.txt', content='Hello')
+2. execute_bash_command(command='cat test.txt')
+3. delete_file(file_path='test.txt')"""
         
         tasks = self.agent._parse_decomposition_response(response)
         
         expected = [
-            "Create a file named 'test.txt' with content 'Hello'",
-            "Display the content of 'test.txt'",
-            "Delete the file 'test.txt'"
+            "write_file(file_path='test.txt', content='Hello')",
+            "execute_bash_command(command='cat test.txt')",
+            "delete_file(file_path='test.txt')"
         ]
         self.assertEqual(tasks, expected)
     
     def test_parse_decomposition_response_bullet_list(self):
-        """Test parsing bullet list response."""
-        response = """- Create a new file
-- Write some content
-- Save the file"""
+        """Test parsing bullet list response with function calls."""
+        response = """- write_file(file_path='new_file.txt', content='content')
+- execute_bash_command(command='ls -la')
+- delete_file(file_path='new_file.txt')"""
         
         tasks = self.agent._parse_decomposition_response(response)
         
         expected = [
-            "Create a new file",
-            "Write some content", 
-            "Save the file"
+            "write_file(file_path='new_file.txt', content='content')",
+            "execute_bash_command(command='ls -la')", 
+            "delete_file(file_path='new_file.txt')"
         ]
         self.assertEqual(tasks, expected)
     
     def test_parse_decomposition_response_mixed_format(self):
-        """Test parsing mixed format response."""
-        response = """1. First task here
-- Second task with bullet
-3. Third numbered task
-* Fourth task with asterisk"""
+        """Test parsing mixed format response with function calls."""
+        response = """1. write_file(file_path='first.txt', content='first')
+- execute_bash_command(command='echo second')
+3. read_file(file_path='third.txt')
+* delete_file(file_path='fourth.txt')"""
         
         tasks = self.agent._parse_decomposition_response(response)
         
         expected = [
-            "First task here",
-            "Second task with bullet",
-            "Third numbered task",
-            "Fourth task with asterisk"
+            "write_file(file_path='first.txt', content='first')",
+            "execute_bash_command(command='echo second')",
+            "read_file(file_path='third.txt')",
+            "delete_file(file_path='fourth.txt')"
         ]
         self.assertEqual(tasks, expected)
     
     def test_parse_decomposition_response_with_empty_lines(self):
-        """Test parsing response with empty lines."""
+        """Test parsing response with empty lines and function calls."""
         response = """
-1. First task
+1. write_file(file_path='first.txt', content='first')
 
-2. Second task
+2. execute_bash_command(command='cat first.txt')
 
 
-3. Third task
+3. delete_file(file_path='first.txt')
 """
         
         tasks = self.agent._parse_decomposition_response(response)
         
         expected = [
-            "First task",
-            "Second task",
-            "Third task"
+            "write_file(file_path='first.txt', content='first')",
+            "execute_bash_command(command='cat first.txt')",
+            "delete_file(file_path='first.txt')"
         ]
         self.assertEqual(tasks, expected)
     
@@ -482,6 +502,234 @@ class TestPlannerAgentStrictLLMOnlyIntegration(unittest.TestCase):
         error2 = context2.exception
         self.assertIsNotNone(error2.correlation_id)
         self.assertNotEqual(error1.correlation_id, error2.correlation_id)  # Different execution IDs
+
+
+class TestPlannerAgentRobustParser(unittest.TestCase):
+    """Test cases for the robust response parser."""
+    
+    def setUp(self):
+        """Set up test fixtures."""
+        self.mock_llm_client = Mock(spec=OllamaClient)
+        self.agent = PlannerAgent("planner", self.mock_llm_client)
+    
+    def test_robust_parser_numbered_list_with_comments(self):
+        """Test robust parser with numbered list and comments (the failing case)."""
+        response = """Based on the mandatory rules and examples, I will provide the correct tool sequence to achieve the goal:
+
+1. write_file(file_path='hello_oniks.py', content='print("Hello ONIKS")')  # Initial content
+2. file_search_replace(file_path='hello_oniks.py', search_pattern='"Hello ONIKS"', replace_with='"K Prize Mission Ready!"')  # Modify content
+3. execute_bash_command(command='source venv/bin/activate && python hello_oniks.py')  # Execute modified file
+"""
+        
+        tool_calls = self.agent._parse_decomposition_response_robust(response)
+        
+        expected = [
+            'write_file(file_path=\'hello_oniks.py\', content=\'print("Hello ONIKS")\')',
+            'file_search_replace(file_path=\'hello_oniks.py\', search_pattern=\'"Hello ONIKS"\', replace_with=\'"K Prize Mission Ready!"\')',
+            'execute_bash_command(command=\'source venv/bin/activate && python hello_oniks.py\')'
+        ]
+        
+        self.assertEqual(len(tool_calls), 3)
+        self.assertEqual(tool_calls, expected)
+    
+    def test_robust_parser_bullet_list(self):
+        """Test robust parser with bullet/dash lists."""
+        response = """- write_file(file_path='test.txt', content='Hello')
+- execute_bash_command(command='cat test.txt')"""
+        
+        tool_calls = self.agent._parse_decomposition_response_robust(response)
+        
+        expected = [
+            "write_file(file_path='test.txt', content='Hello')",
+            "execute_bash_command(command='cat test.txt')"
+        ]
+        
+        self.assertEqual(tool_calls, expected)
+    
+    def test_robust_parser_mixed_with_extra_text(self):
+        """Test robust parser with mixed formatting and extra text."""
+        response = """Here's what I need to do:
+        
+1. create_file(name='example.py', content='print("Hello")')
+2. run_python(script='example.py')
+
+That should accomplish the goal."""
+        
+        tool_calls = self.agent._parse_decomposition_response_robust(response)
+        
+        expected = [
+            'create_file(name=\'example.py\', content=\'print("Hello")\')',
+            "run_python(script='example.py')"
+        ]
+        
+        self.assertEqual(tool_calls, expected)
+    
+    def test_robust_parser_function_calls_in_text(self):
+        """Test robust parser with function calls scattered in text."""
+        response = """To solve this problem, I'll use write_file(path='script.py', data='code') and then 
+        execute_bash_command(cmd='python script.py') to run it."""
+        
+        tool_calls = self.agent._parse_decomposition_response_robust(response)
+        
+        expected = [
+            "write_file(path='script.py', data='code')",
+            "execute_bash_command(cmd='python script.py')"
+        ]
+        
+        self.assertEqual(tool_calls, expected)
+    
+    def test_robust_parser_complex_nested_quotes(self):
+        """Test robust parser with complex nested quotes."""
+        response = """1. write_file(file_path='config.json', content='{"key": "value with \\"nested\\" quotes"}')
+2. execute_bash_command(command="echo 'Processing config.json file'")"""
+        
+        tool_calls = self.agent._parse_decomposition_response_robust(response)
+        
+        self.assertEqual(len(tool_calls), 2)
+        self.assertTrue(tool_calls[0].startswith('write_file('))
+        self.assertTrue(tool_calls[1].startswith('execute_bash_command('))
+    
+    def test_robust_parser_empty_response(self):
+        """Test robust parser with empty or invalid responses."""
+        # Empty response
+        self.assertEqual(self.agent._parse_decomposition_response_robust(""), [])
+        
+        # None response
+        self.assertEqual(self.agent._parse_decomposition_response_robust(None), [])
+        
+        # No function calls
+        self.assertEqual(self.agent._parse_decomposition_response_robust("Just some text"), [])
+    
+    def test_extract_function_call_from_line(self):
+        """Test the helper method for extracting function calls from lines."""
+        # Simple function call
+        result = self.agent._extract_function_call_from_line("write_file(path='test.txt', content='Hello')")
+        self.assertEqual(result, "write_file(path='test.txt', content='Hello')")
+        
+        # Function call with comments
+        result = self.agent._extract_function_call_from_line("write_file(path='test.txt', content='Hello')  # This writes a file")
+        self.assertEqual(result, "write_file(path='test.txt', content='Hello')")
+        
+        # Function call with nested quotes
+        result = self.agent._extract_function_call_from_line('write_file(path="file.py", content=\'print("Hello")\')')
+        self.assertEqual(result, 'write_file(path="file.py", content=\'print("Hello")\')')
+        
+        # No function call
+        result = self.agent._extract_function_call_from_line("Just some text")
+        self.assertIsNone(result)
+
+
+class TestPlannerAgentTimeout(unittest.TestCase):
+    """Test cases for timeout functionality."""
+    
+    def setUp(self):
+        """Set up test fixtures."""
+        self.mock_llm_client = Mock(spec=OllamaClient)
+        # Use very short timeout for testing
+        self.agent = PlannerAgent("planner", self.mock_llm_client, timeout_seconds=0.1)
+        self.state = State()
+        self.state.data['goal'] = "Test goal"
+    
+    @patch('time.time')
+    def test_timeout_before_llm_call(self, mock_time):
+        """Test timeout before LLM call."""
+        # Mock time to simulate timeout
+        mock_time.side_effect = [0.0, 0.2]  # Start at 0, then exceed timeout
+        
+        with self.assertRaises(PlanningTimeoutError) as context:
+            self.agent.execute(self.state)
+        
+        error = context.exception
+        self.assertIn("Planning cycle timed out before LLM invocation", error.message)
+        self.assertEqual(error.timeout_seconds, 0.1)
+        self.assertEqual(error.elapsed_seconds, 0.2)
+        
+        # Verify LLM was not called
+        self.mock_llm_client.invoke.assert_not_called()
+    
+    @patch('time.time')
+    def test_timeout_after_llm_call(self, mock_time):
+        """Test timeout after LLM call."""
+        # Mock time progression: start, before LLM, after LLM (timeout)
+        mock_time.side_effect = [0.0, 0.05, 0.2]  # Within timeout, then exceed
+        
+        # Mock successful LLM response
+        self.mock_llm_client.invoke.return_value = "1. write_file(file_path='test.txt', content='Hello')"
+        
+        with self.assertRaises(PlanningTimeoutError) as context:
+            self.agent.execute(self.state)
+        
+        error = context.exception
+        self.assertIn("Planning cycle timed out after LLM response", error.message)
+        self.assertEqual(error.timeout_seconds, 0.1)
+        self.assertEqual(error.elapsed_seconds, 0.2)
+        
+        # Verify LLM was called
+        self.mock_llm_client.invoke.assert_called_once()
+    
+    @patch('time.time')
+    def test_timeout_after_parsing(self, mock_time):
+        """Test timeout after parsing."""
+        # Mock time progression: start, before LLM, after LLM, after parsing (timeout)
+        mock_time.side_effect = [0.0, 0.02, 0.04, 0.2]  # Within timeout, then exceed
+        
+        # Mock successful LLM response
+        self.mock_llm_client.invoke.return_value = "1. write_file(file_path='test.txt', content='Hello')"
+        
+        with self.assertRaises(PlanningTimeoutError) as context:
+            self.agent.execute(self.state)
+        
+        error = context.exception
+        self.assertIn("Planning cycle timed out during response parsing", error.message)
+    
+    @patch('time.time')
+    def test_successful_execution_within_timeout(self, mock_time):
+        """Test successful execution that completes within timeout."""
+        # Mock time progression: always within timeout
+        mock_time.side_effect = [0.0, 0.02, 0.04, 0.06, 0.08]  # All within 0.1s timeout
+        
+        # Mock successful LLM response
+        self.mock_llm_client.invoke.return_value = "1. write_file(file_path='test.txt', content='Hello')"
+        
+        result_state = self.agent.execute(self.state)
+        
+        # Should complete successfully
+        self.assertIn('plan', result_state.data)
+        self.assertEqual(len(result_state.data['plan']), 2)  # 1 tool call + task_complete()
+        
+        # Verify timing messages
+        messages = result_state.message_history
+        self.assertTrue(any("timeout: 0.1s" in msg for msg in messages))
+        self.assertTrue(any("elapsed:" in msg for msg in messages))
+    
+    def test_timeout_error_attributes(self):
+        """Test PlanningTimeoutError attributes."""
+        error = PlanningTimeoutError(
+            message="Test timeout",
+            timeout_seconds=60.0,
+            elapsed_seconds=75.5,
+            correlation_id="test123",
+            request_details={"test": "data"}
+        )
+        
+        self.assertEqual(error.message, "Test timeout")
+        self.assertEqual(error.timeout_seconds, 60.0)
+        self.assertEqual(error.elapsed_seconds, 75.5)
+        self.assertEqual(error.correlation_id, "test123")
+        self.assertEqual(error.request_details, {"test": "data"})
+        
+        # Test string representation
+        error_str = str(error)
+        self.assertIn("Planning Timeout: Test timeout", error_str)
+        self.assertIn("Timeout Limit: 60.0s", error_str)
+        self.assertIn("Elapsed Time: 75.50s", error_str)
+        self.assertIn("Correlation ID: test123", error_str)
+        
+        # Test context
+        context = error.get_full_context()
+        self.assertEqual(context["error_type"], "PlanningTimeoutError")
+        self.assertEqual(context["timeout_seconds"], 60.0)
+        self.assertEqual(context["elapsed_seconds"], 75.5)
 
 
 if __name__ == '__main__':

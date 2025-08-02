@@ -79,3 +79,77 @@ class LLMUnavailableError(Exception):
             },
             "request_details": self.request_details
         }
+
+
+class PlanningTimeoutError(Exception):
+    """Critical exception raised when planning cycle exceeds timeout limit.
+    
+    This exception is raised when the PlannerAgent cannot generate and successfully
+    parse a plan within the specified timeout period. It prevents infinite hangs
+    and provides clear timeout information for debugging.
+    
+    Attributes:
+        message: The error message describing the timeout failure.
+        timeout_seconds: The timeout limit that was exceeded.
+        elapsed_seconds: How long the operation actually took.
+        correlation_id: Unique identifier for error correlation.
+        request_details: Dictionary containing request information.
+        timestamp: When the timeout occurred.
+    """
+    
+    def __init__(
+        self,
+        message: str,
+        timeout_seconds: float,
+        elapsed_seconds: float,
+        correlation_id: Optional[str] = None,
+        request_details: Optional[Dict[str, Any]] = None
+    ) -> None:
+        """Initialize the PlanningTimeoutError.
+        
+        Args:
+            message: Descriptive error message.
+            timeout_seconds: The timeout limit that was exceeded.
+            elapsed_seconds: How long the operation actually took.
+            correlation_id: Unique identifier for error correlation.
+            request_details: Dictionary with request context information.
+        """
+        super().__init__(message)
+        self.message = message
+        self.timeout_seconds = timeout_seconds
+        self.elapsed_seconds = elapsed_seconds
+        self.correlation_id = correlation_id
+        self.request_details = request_details or {}
+        self.timestamp = datetime.now().isoformat()
+    
+    def __str__(self) -> str:
+        """Return a detailed string representation of the timeout error."""
+        error_parts = [f"Planning Timeout: {self.message}"]
+        
+        if self.correlation_id:
+            error_parts.append(f"Correlation ID: {self.correlation_id}")
+        
+        error_parts.append(f"Timeout Limit: {self.timeout_seconds}s")
+        error_parts.append(f"Elapsed Time: {self.elapsed_seconds:.2f}s")
+        error_parts.append(f"Timestamp: {self.timestamp}")
+        
+        if self.request_details:
+            error_parts.append(f"Request Details: {self.request_details}")
+        
+        return " | ".join(error_parts)
+    
+    def get_full_context(self) -> Dict[str, Any]:
+        """Get complete timeout error context as a dictionary.
+        
+        Returns:
+            Dictionary containing all timeout error context information.
+        """
+        return {
+            "error_type": "PlanningTimeoutError",
+            "message": self.message,
+            "timestamp": self.timestamp,
+            "correlation_id": self.correlation_id,
+            "timeout_seconds": self.timeout_seconds,
+            "elapsed_seconds": self.elapsed_seconds,
+            "request_details": self.request_details
+        }

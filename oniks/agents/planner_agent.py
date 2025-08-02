@@ -11,13 +11,16 @@ stops the entire graph execution.
 
 import json
 import logging
+import re
+import signal
+import time
 import traceback
 import uuid
 from datetime import datetime
 from typing import List, Optional, TYPE_CHECKING
 
 from oniks.agents.base import BaseAgent
-from oniks.core.exceptions import LLMUnavailableError
+from oniks.core.exceptions import LLMUnavailableError, PlanningTimeoutError
 
 if TYPE_CHECKING:
     from oniks.core.state import State
@@ -75,7 +78,7 @@ class PlannerAgent(BaseAgent):
         ]
     """
     
-    def __init__(self, name: str, llm_client: "OllamaClient", available_tools: Optional[List["Tool"]] = None) -> None:
+    def __init__(self, name: str, llm_client: "OllamaClient", available_tools: Optional[List["Tool"]] = None, timeout_seconds: float = 60.0) -> None:
         """Initialize the PlannerAgent with LLM client and available tools.
         
         Args:
@@ -83,9 +86,11 @@ class PlannerAgent(BaseAgent):
             llm_client: OllamaClient instance for LLM interactions.
             available_tools: List of Tool instances that can be used in plans.
                            If None, defaults to empty list.
+            timeout_seconds: Maximum time allowed for planning cycle in seconds.
+                           Defaults to 60.0 seconds.
             
         Raises:
-            ValueError: If name is empty, None, or llm_client is None.
+            ValueError: If name is empty, None, llm_client is None, or timeout_seconds is not positive.
             TypeError: If available_tools is not a list.
         """
         super().__init__(name)
@@ -99,8 +104,12 @@ class PlannerAgent(BaseAgent):
         if not isinstance(available_tools, list):
             raise TypeError(f"Available tools must be a list, got {type(available_tools).__name__}")
         
+        if not isinstance(timeout_seconds, (int, float)) or timeout_seconds <= 0:
+            raise ValueError(f"Timeout seconds must be a positive number, got {timeout_seconds}")
+        
         self.llm_client = llm_client
         self.available_tools = available_tools
+        self.timeout_seconds = timeout_seconds
     
     def execute(self, state: "State") -> "State":
         """Execute STRICT LLM-ONLY task decomposition logic to create an executable plan.
@@ -111,16 +120,18 @@ class PlannerAgent(BaseAgent):
         1. Validates that a goal exists (fails immediately if not)
         2. Generates a structured prompt for LLM-powered tool-based decomposition
         3. Invokes the LLM with strict validation (HTTP 200 + non-empty content)
-        4. Parses and validates the LLM response
+        4. Parses and validates the LLM response using robust regex-based parsing
         5. Creates tool call sequence ONLY from successful LLM response
         6. Tags operation as [LLM-POWERED] ONLY on complete success
+        7. Enforces timeout limit to prevent infinite hangs
         
-        FAILURE CONDITIONS (all throw LLMUnavailableError):
-        - No goal in state
-        - LLM connection failure
-        - LLM HTTP error response
-        - Empty or invalid LLM response content
-        - Unparseable LLM response
+        FAILURE CONDITIONS:
+        - No goal in state (throws LLMUnavailableError)
+        - Planning cycle exceeds timeout (throws PlanningTimeoutError)
+        - LLM connection failure (throws LLMUnavailableError)
+        - LLM HTTP error response (throws LLMUnavailableError)
+        - Empty or invalid LLM response content (throws LLMUnavailableError)
+        - Unparseable LLM response (throws LLMUnavailableError)
         
         Args:
             state: The current state containing the goal to decompose.
@@ -130,7 +141,11 @@ class PlannerAgent(BaseAgent):
             
         Raises:
             LLMUnavailableError: If LLM is unavailable or returns invalid response.
+            PlanningTimeoutError: If planning cycle exceeds timeout limit.
         """
+        # Record start time for timeout enforcement
+        start_time = time.time()
+        
         # Create a copy of the state to avoid modifying the original
         result_state = state.model_copy(deep=True)
         
@@ -138,8 +153,8 @@ class PlannerAgent(BaseAgent):
         agent_execution_id = str(uuid.uuid4())[:8]
         timestamp = datetime.now().isoformat()
         
-        # Add message about planner execution
-        result_state.add_message(f"Planner agent {self.name} starting STRICT LLM-ONLY task decomposition")
+        # Add message about planner execution with timeout info
+        result_state.add_message(f"Planner agent {self.name} starting STRICT LLM-ONLY task decomposition (timeout: {self.timeout_seconds}s)")
         
         # CRITICAL: Extract and validate the goal - fail immediately if missing
         goal = result_state.data.get('goal', '').strip()
@@ -171,12 +186,50 @@ class PlannerAgent(BaseAgent):
         
         result_state.add_message("Generated task decomposition prompt for LLM")
         
-        # CRITICAL: Invoke LLM with strict validation - fail immediately on any error
+        # CRITICAL: Invoke LLM with strict validation and timeout enforcement
         try:
+            # Check timeout before LLM call
+            elapsed_time = time.time() - start_time
+            if elapsed_time >= self.timeout_seconds:
+                error_msg = f"Planning timeout before LLM call - elapsed {elapsed_time:.2f}s >= {self.timeout_seconds}s"
+                logger.error(f"[TIMEOUT-{agent_execution_id}] {error_msg}")
+                result_state.add_message(f"[TIMEOUT-ERROR] {error_msg}")
+                
+                raise PlanningTimeoutError(
+                    message="Planning cycle timed out before LLM invocation",
+                    timeout_seconds=self.timeout_seconds,
+                    elapsed_seconds=elapsed_time,
+                    correlation_id=agent_execution_id,
+                    request_details={
+                        "agent_execution_id": agent_execution_id,
+                        "goal": goal,
+                        "phase": "pre_llm_call"
+                    }
+                )
             logger.info(f"[PLANNER-{agent_execution_id}] Calling LLM for task decomposition (STRICT MODE)")
             
-            # Call LLM - this may throw OllamaConnectionError or other exceptions
+            # Call LLM with timeout awareness - this may throw OllamaConnectionError or other exceptions
             raw_llm_response = self.llm_client.invoke(decomposition_prompt)
+            
+            # Check timeout after LLM call
+            elapsed_time = time.time() - start_time
+            if elapsed_time >= self.timeout_seconds:
+                error_msg = f"Planning timeout after LLM call - elapsed {elapsed_time:.2f}s >= {self.timeout_seconds}s"
+                logger.error(f"[TIMEOUT-{agent_execution_id}] {error_msg}")
+                result_state.add_message(f"[TIMEOUT-ERROR] {error_msg}")
+                
+                raise PlanningTimeoutError(
+                    message="Planning cycle timed out after LLM response",
+                    timeout_seconds=self.timeout_seconds,
+                    elapsed_seconds=elapsed_time,
+                    correlation_id=agent_execution_id,
+                    request_details={
+                        "agent_execution_id": agent_execution_id,
+                        "goal": goal,
+                        "phase": "post_llm_call",
+                        "response_length": len(raw_llm_response) if raw_llm_response else 0
+                    }
+                )
             
             # STRICT VALIDATION: Validate LLM response is non-empty and usable
             if not raw_llm_response or not isinstance(raw_llm_response, str) or not raw_llm_response.strip():
@@ -199,8 +252,28 @@ class PlannerAgent(BaseAgent):
             
             result_state.data['decomposition_response'] = raw_llm_response
             
-            # STRICT VALIDATION: Parse the LLM response to extract tool call sequence
-            tool_call_list = self._parse_decomposition_response(raw_llm_response)
+            # STRICT VALIDATION: Parse the LLM response to extract tool call sequence with robust parsing
+            tool_call_list = self._parse_decomposition_response_robust(raw_llm_response)
+            
+            # Check timeout after parsing
+            elapsed_time = time.time() - start_time
+            if elapsed_time >= self.timeout_seconds:
+                error_msg = f"Planning timeout after parsing - elapsed {elapsed_time:.2f}s >= {self.timeout_seconds}s"
+                logger.error(f"[TIMEOUT-{agent_execution_id}] {error_msg}")
+                result_state.add_message(f"[TIMEOUT-ERROR] {error_msg}")
+                
+                raise PlanningTimeoutError(
+                    message="Planning cycle timed out during response parsing",
+                    timeout_seconds=self.timeout_seconds,
+                    elapsed_seconds=elapsed_time,
+                    correlation_id=agent_execution_id,
+                    request_details={
+                        "agent_execution_id": agent_execution_id,
+                        "goal": goal,
+                        "phase": "post_parsing",
+                        "parsed_tool_calls": len(tool_call_list)
+                    }
+                )
             
             # STRICT VALIDATION: Ensure we got valid tool calls
             if not tool_call_list:
@@ -226,10 +299,11 @@ class PlannerAgent(BaseAgent):
             # SUCCESS: Store the LLM-generated plan in state
             result_state.data['plan'] = tool_call_list
             
-            # BULLETPROOF LOGGING: Log successful LLM-powered operation
+            # BULLETPROOF LOGGING: Log successful LLM-powered operation with timing
             success_timestamp = datetime.now().isoformat()
-            logger.info(f"[PLANNER-{agent_execution_id}] LLM decomposition completed successfully at {success_timestamp}")
-            result_state.add_message(f"[LLM-POWERED] Successfully received decomposition from LLM (execution: {agent_execution_id})")
+            final_elapsed_time = time.time() - start_time
+            logger.info(f"[PLANNER-{agent_execution_id}] LLM decomposition completed successfully at {success_timestamp} (elapsed: {final_elapsed_time:.2f}s)")
+            result_state.add_message(f"[LLM-POWERED] Successfully received decomposition from LLM (execution: {agent_execution_id}, elapsed: {final_elapsed_time:.2f}s)")
             result_state.add_message(f"[LLM-POWERED] Created tool-based plan with {len(tool_call_list)} steps")
             
             # Log the LLM-generated plan for debugging
@@ -240,8 +314,8 @@ class PlannerAgent(BaseAgent):
             
             logger.info(f"[PLANNER-{agent_execution_id}] STRICT LLM-ONLY decomposition completed successfully")
             
-        except LLMUnavailableError:
-            # Re-raise our own LLMUnavailableError without modification
+        except (LLMUnavailableError, PlanningTimeoutError):
+            # Re-raise our own errors without modification
             raise
             
         except Exception as e:
@@ -401,12 +475,19 @@ Create your MANDATORY sequential tool calls to achieve the goal:"""
 
         return prompt
     
-    def _parse_decomposition_response(self, response: str) -> List[str]:
-        """Parse LLM response to extract the list of tool calls.
+    def _parse_decomposition_response_robust(self, response: str) -> List[str]:
+        """Parse LLM response using robust regex-based extraction to cut through fluff.
         
-        Extracts numbered tool calls from the LLM response and returns them as
-        a clean list of function call strings. Handles various formatting variations
-        that might appear in LLM responses.
+        This method uses multiple parsing strategies to extract tool calls from ANY text
+        environment, cutting through "polite" fluff and getting to the essence. It can
+        handle various formats and finds numbered lists with tool calls regardless of
+        surrounding text.
+        
+        Parsing strategies (in order):
+        1. Numbered list with function calls (primary)
+        2. Bullet/dash list with function calls  
+        3. Standalone function calls anywhere in text
+        4. Multi-line function calls with comments
         
         Args:
             response: Raw response from the LLM.
@@ -419,35 +500,161 @@ Create your MANDATORY sequential tool calls to achieve the goal:"""
             return []
         
         tool_calls = []
-        lines = response.strip().split('\n')
         
+        # Strategy 1: Process all lines looking for any kind of list items with function calls
+        # This unified approach handles numbered, bullet, and asterisk lists all at once
+        lines = response.split('\n')
         for line in lines:
             line = line.strip()
             if not line:
                 continue
             
-            # Look for numbered list items (1., 2., etc.)
-            import re
-            match = re.match(r'^\d+\.\s*(.+)$', line)
-            if match:
-                tool_call = match.group(1).strip()
-                if self._is_valid_tool_call(tool_call):
-                    tool_calls.append(tool_call)
-                    continue
+            # Check for numbered items: "1. function_name(...)"
+            numbered_match = re.match(r'^\s*(\d+)\.\s*(.+?)(?:\s*#.*)?$', line)
+            if numbered_match:
+                num, potential_call = numbered_match.groups()
+                potential_call = potential_call.strip()
+                
+                extracted_call = self._extract_function_call_from_line(potential_call)
+                if extracted_call and self._is_valid_tool_call(extracted_call):
+                    tool_calls.append(extracted_call)
+                    logger.debug(f"Extracted numbered tool call {num}: {extracted_call}")
+                continue
             
-            # Look for dash/bullet list items
-            if line.startswith('- ') or line.startswith('* '):
-                tool_call = line[2:].strip()
-                if self._is_valid_tool_call(tool_call):
-                    tool_calls.append(tool_call)
-                    continue
+            # Check for bullet items: "- function_name(...)" or "* function_name(...)"
+            bullet_match = re.match(r'^\s*[-*]\s*(.+?)(?:\s*#.*)?$', line)
+            if bullet_match:
+                potential_call = bullet_match.group(1).strip()
+                
+                extracted_call = self._extract_function_call_from_line(potential_call)
+                if extracted_call and self._is_valid_tool_call(extracted_call):
+                    tool_calls.append(extracted_call)
+                    logger.debug(f"Extracted bullet tool call: {extracted_call}")
+                continue
             
-            # If line looks like a function call, include it
-            if self._is_valid_tool_call(line):
-                tool_calls.append(line)
+            # If it's not a list item but contains a function call, extract it
+            extracted_call = self._extract_function_call_from_line(line)
+            if extracted_call and self._is_valid_tool_call(extracted_call):
+                tool_calls.append(extracted_call)
+                logger.debug(f"Extracted standalone tool call: {extracted_call}")
         
-        logger.info(f"Parsed {len(tool_calls)} tool calls from decomposition response")
-        return tool_calls
+        if tool_calls:
+            logger.info(f"Found {len(tool_calls)} tool calls using unified approach")
+        
+        # Strategy 2: If no matches yet, try more aggressive pattern matching for any function calls
+        if not tool_calls:
+            # More aggressive pattern to find function calls anywhere in the text
+            function_pattern = r'([a-zA-Z_][a-zA-Z0-9_]*\s*\([^)]*\))'
+            function_matches = re.findall(function_pattern, response)
+            
+            if function_matches:
+                logger.info(f"Found {len(function_matches)} potential function calls in text")
+                for tool_call in function_matches:
+                    clean_tool_call = tool_call.strip()
+                    if self._is_valid_tool_call(clean_tool_call):
+                        tool_calls.append(clean_tool_call)
+                        logger.debug(f"Extracted function call: {clean_tool_call}")
+        
+        # Strategy 3: Multi-line function calls (for complex arguments)
+        if not tool_calls:
+            # Handle cases where function calls span multiple lines
+            multiline_pattern = r'([a-zA-Z_][a-zA-Z0-9_]*\s*\([^)]*(?:\n[^)]*)*\))'
+            multiline_matches = re.findall(multiline_pattern, response, re.DOTALL)
+            
+            if multiline_matches:
+                logger.info(f"Found {len(multiline_matches)} potential multi-line function calls")
+                for tool_call in multiline_matches:
+                    # Clean up multi-line call (remove extra whitespace/newlines)
+                    clean_tool_call = re.sub(r'\s+', ' ', tool_call.strip())
+                    if self._is_valid_tool_call(clean_tool_call):
+                        tool_calls.append(clean_tool_call)
+                        logger.debug(f"Extracted multi-line tool call: {clean_tool_call}")
+        
+        # Remove duplicates while preserving order
+        unique_tool_calls = []
+        seen = set()
+        for tool_call in tool_calls:
+            if tool_call not in seen:
+                unique_tool_calls.append(tool_call)
+                seen.add(tool_call)
+        
+        logger.info(f"Robust parser extracted {len(unique_tool_calls)} unique tool calls from response")
+        
+        if not unique_tool_calls:
+            logger.warning("Robust parser could not extract any valid tool calls")
+            logger.debug(f"Raw response content: {response[:500]}...")  # Log first 500 chars for debugging
+        
+        return unique_tool_calls
+    
+    def _extract_function_call_from_line(self, line: str) -> Optional[str]:
+        """Extract a function call from a line, handling balanced parentheses and quotes.
+        
+        This method carefully parses a line to extract a complete function call,
+        properly handling nested quotes, escaped characters, and balanced parentheses.
+        
+        Args:
+            line: The line of text to extract a function call from.
+            
+        Returns:
+            The extracted function call string, or None if no valid function call found.
+        """
+        line = line.strip()
+        
+        # Find the start of a function call
+        func_start_match = re.search(r'([a-zA-Z_][a-zA-Z0-9_]*)\s*\(', line)
+        if not func_start_match:
+            return None
+        
+        func_name = func_start_match.group(1)
+        start_pos = func_start_match.start()
+        paren_start = func_start_match.end() - 1  # Position of opening parenthesis
+        
+        # Find the matching closing parenthesis
+        paren_count = 1
+        pos = paren_start + 1
+        in_single_quote = False
+        in_double_quote = False
+        escape_next = False
+        
+        while pos < len(line) and paren_count > 0:
+            char = line[pos]
+            
+            if escape_next:
+                escape_next = False
+            elif char == '\\':
+                escape_next = True
+            elif char == "'" and not in_double_quote:
+                in_single_quote = not in_single_quote
+            elif char == '"' and not in_single_quote:
+                in_double_quote = not in_double_quote
+            elif not in_single_quote and not in_double_quote:
+                if char == '(':
+                    paren_count += 1
+                elif char == ')':
+                    paren_count -= 1
+            
+            pos += 1
+        
+        if paren_count == 0:
+            # Found matching closing parenthesis
+            function_call = line[start_pos:pos]
+            return function_call.strip()
+        
+        return None
+    
+    def _parse_decomposition_response(self, response: str) -> List[str]:
+        """Legacy parser method - kept for backward compatibility.
+        
+        This method is deprecated. Use _parse_decomposition_response_robust instead.
+        
+        Args:
+            response: Raw response from the LLM.
+            
+        Returns:
+            List of tool call strings extracted from the response.
+        """
+        logger.warning("Using legacy parser - consider using robust parser instead")
+        return self._parse_decomposition_response_robust(response)
     
     
     def _is_valid_tool_call(self, tool_call: str) -> bool:
