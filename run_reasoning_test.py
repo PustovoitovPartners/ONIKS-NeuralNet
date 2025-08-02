@@ -214,7 +214,7 @@ def main() -> None:
     # Create LLM client
     print("4. Creating LLM client...")
     try:
-        llm_client = OllamaClient(timeout=300)
+        llm_client = OllamaClient(timeout=1200)
         # Check if the default model is available
         if llm_client.check_model_availability():
             print("   LLM client created successfully with model 'llama3:8b'")
@@ -225,7 +225,7 @@ def main() -> None:
         print(f"   Warning: {e}")
         print("   Note: Ensure Ollama is running locally with 'ollama serve'")
         print("   And that you have pulled the llama3:8b model with 'ollama pull llama3:8b'")
-        llm_client = OllamaClient(timeout=300)  # Create client anyway for demonstration
+        llm_client = OllamaClient(timeout=1200)  # Create client anyway for demonstration
     
     # Create agents and nodes
     print("5. Creating agents and nodes...")

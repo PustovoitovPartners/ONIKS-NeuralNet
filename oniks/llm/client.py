@@ -42,7 +42,7 @@ class OllamaClient:
     
     Attributes:
         host: The host address for the Ollama service (default: localhost:11434).
-        timeout: Request timeout in seconds (default: 300).
+        timeout: Request timeout in seconds (default: 1200).
     
     Example:
         >>> client = OllamaClient()
@@ -51,7 +51,7 @@ class OllamaClient:
         The capital of France is Paris.
     """
     
-    def __init__(self, host: str = "http://localhost:11434", timeout: int = 300) -> None:
+    def __init__(self, host: str = "http://localhost:11434", timeout: int = 1200) -> None:
         """Initialize the Ollama client.
         
         Args:
