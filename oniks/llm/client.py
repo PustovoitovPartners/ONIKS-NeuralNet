@@ -11,7 +11,7 @@ from datetime import datetime
 from typing import Optional
 
 import ollama
-from ollama import ResponseError
+from ollama import ResponseError, ChatResponse
 
 
 logger = logging.getLogger(__name__)
@@ -109,28 +109,53 @@ class OllamaClient:
             )
             
             # STRICT VALIDATION: Validate response structure and content
-            if not response or not isinstance(response, dict):
+            if not response:
+                logger.error(f"[LLM-ERROR-{request_id}] Received empty response from Ollama")
+                logger.error(f"[LLM-ERROR-{request_id}] Response value: {response}")
+                raise OllamaConnectionError("Received empty response from Ollama")
+            
+            # Handle both ChatResponse objects and dictionary responses
+            if isinstance(response, ChatResponse):
+                # Extract content from ChatResponse object
+                if not hasattr(response, 'message') or not response.message:
+                    logger.error(f"[LLM-ERROR-{request_id}] ChatResponse missing message attribute")
+                    logger.error(f"[LLM-ERROR-{request_id}] Response type: {type(response)}")
+                    logger.error(f"[LLM-ERROR-{request_id}] Available attributes: {dir(response)}")
+                    raise OllamaConnectionError("ChatResponse missing message attribute")
+                
+                message = response.message
+                if not hasattr(message, 'content'):
+                    logger.error(f"[LLM-ERROR-{request_id}] Message object missing content attribute")
+                    logger.error(f"[LLM-ERROR-{request_id}] Message type: {type(message)}")
+                    logger.error(f"[LLM-ERROR-{request_id}] Available attributes: {dir(message)}")
+                    raise OllamaConnectionError("Message object missing content attribute")
+                
+                content = message.content
+                
+            elif isinstance(response, dict):
+                # Handle dictionary response format (legacy compatibility)
+                if 'message' not in response:
+                    logger.error(f"[LLM-ERROR-{request_id}] No 'message' field in Ollama response")
+                    logger.error(f"[LLM-ERROR-{request_id}] Available fields: {list(response.keys())}")
+                    logger.error(f"[LLM-ERROR-{request_id}] FULL RESPONSE DUMP: {response}")
+                    raise OllamaConnectionError("Ollama response missing 'message' field")
+                
+                message = response['message']
+                if not isinstance(message, dict) or 'content' not in message:
+                    logger.error(f"[LLM-ERROR-{request_id}] Invalid message structure in Ollama response")
+                    logger.error(f"[LLM-ERROR-{request_id}] Message type: {type(message)}")
+                    logger.error(f"[LLM-ERROR-{request_id}] Message fields: {list(message.keys()) if isinstance(message, dict) else 'Not a dict'}")
+                    logger.error(f"[LLM-ERROR-{request_id}] FULL RESPONSE DUMP: {response}")
+                    raise OllamaConnectionError("Ollama response message missing 'content' field")
+                
+                content = message['content']
+                
+            else:
                 logger.error(f"[LLM-ERROR-{request_id}] Invalid response type from Ollama")
                 logger.error(f"[LLM-ERROR-{request_id}] Response type: {type(response)}")
+                logger.error(f"[LLM-ERROR-{request_id}] Expected: ChatResponse or dict")
                 logger.error(f"[LLM-ERROR-{request_id}] Response value: {response}")
                 raise OllamaConnectionError("Received invalid response type from Ollama")
-            
-            # STRICT VALIDATION: Extract and validate message content
-            if 'message' not in response:
-                logger.error(f"[LLM-ERROR-{request_id}] No 'message' field in Ollama response")
-                logger.error(f"[LLM-ERROR-{request_id}] Available fields: {list(response.keys())}")
-                logger.error(f"[LLM-ERROR-{request_id}] FULL RESPONSE DUMP: {response}")
-                raise OllamaConnectionError("Ollama response missing 'message' field")
-            
-            message = response['message']
-            if not isinstance(message, dict) or 'content' not in message:
-                logger.error(f"[LLM-ERROR-{request_id}] Invalid message structure in Ollama response")
-                logger.error(f"[LLM-ERROR-{request_id}] Message type: {type(message)}")
-                logger.error(f"[LLM-ERROR-{request_id}] Message fields: {list(message.keys()) if isinstance(message, dict) else 'Not a dict'}")
-                logger.error(f"[LLM-ERROR-{request_id}] FULL RESPONSE DUMP: {response}")
-                raise OllamaConnectionError("Ollama response message missing 'content' field")
-            
-            content = message['content']
             
             # STRICT VALIDATION: Ensure content is a non-empty string
             if not isinstance(content, str):
@@ -143,7 +168,10 @@ class OllamaClient:
             
             if not content:
                 logger.error(f"[LLM-ERROR-{request_id}] Empty content in Ollama response")
-                logger.error(f"[LLM-ERROR-{request_id}] Original content: {repr(message['content'])}")
+                if isinstance(response, ChatResponse):
+                    logger.error(f"[LLM-ERROR-{request_id}] Original content: {repr(response.message.content)}")
+                else:
+                    logger.error(f"[LLM-ERROR-{request_id}] Original content: {repr(message['content'])}")
                 raise OllamaConnectionError("Ollama response content is empty")
             
             # SUCCESS: Log complete response details
