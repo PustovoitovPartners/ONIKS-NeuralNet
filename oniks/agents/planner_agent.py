@@ -415,7 +415,7 @@ RULE 4: STEP DEPENDENCY ANALYSIS REQUIRED
 
 RULE 5: PYTHON EXECUTION MUST USE VIRTUAL ENVIRONMENT
 - ALL Python commands MUST use virtual environment activation
-- Format: execute_bash_command(command='source venv/bin/activate && python script.py')
+- Format: execute_bash_command(command='python3 script.py')
 - NEVER execute Python directly without venv activation
 
 --- MANDATORY EXECUTION PATTERN ---
@@ -449,11 +449,11 @@ Goal: Create hello_oniks.py that prints "K Prize Mission Ready!" and execute it
 CORRECT sequence (MANDATORY):
 1. write_file(file_path='hello_oniks.py', content='print("Hello ONIKS")')  # Initial content
 2. file_search_replace(file_path='hello_oniks.py', search_pattern='"Hello ONIKS"', replace_with='"K Prize Mission Ready!"')  # Modify content
-3. execute_bash_command(command='source venv/bin/activate && python hello_oniks.py')  # Execute modified file
+3. execute_bash_command(command='python3 hello_oniks.py')  # Execute modified file
 
 FORBIDDEN Example - Direct Optimization:
 1. write_file(file_path='hello_oniks.py', content='print("K Prize Mission Ready!")')  # FORBIDDEN - skips intermediate state
-2. execute_bash_command(command='source venv/bin/activate && python hello_oniks.py')
+2. execute_bash_command(command='python3 hello_oniks.py')
 
 WHY THE CORRECT EXAMPLE IS MANDATORY:
 - Step 1 creates intermediate state (file with initial content)
