@@ -115,6 +115,8 @@ class MultiStepGraph(Graph):
                 node = self.nodes[node_name]
                 
                 current_state.add_message(f"Executing node: {node_name} (iteration: {iterations})")
+                print(f"   DEBUG: Executing node '{node_name}' at iteration {iterations}")
+                print(f"   DEBUG: Current state keys: {list(current_state.data.keys())}")
                 
                 # Save state before execution
                 if self.checkpointer:
@@ -131,6 +133,7 @@ class MultiStepGraph(Graph):
                 
                 # Get next nodes based on edge conditions
                 next_candidates = self.get_next_nodes(node_name, current_state)
+                print(f"   DEBUG: Next candidates from '{node_name}': {next_candidates}")
                 next_nodes.extend(next_candidates)
             
             # Remove duplicates while preserving order
@@ -361,7 +364,7 @@ def main() -> None:
             initial_state=initial_state,
             thread_id="demo_thread_001",
             start_node="planner_agent",
-            max_iterations=10
+            max_iterations=50
         )
         
         print("8. Graph execution completed successfully!\n")
