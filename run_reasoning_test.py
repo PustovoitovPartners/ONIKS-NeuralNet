@@ -191,7 +191,7 @@ def main() -> None:
     # Create initial state with complex goal for hierarchical planning
     print("2. Creating initial state with complex goal for hierarchical planning...")
     initial_state = State()
-    initial_state.data['goal'] = "First, create a Python file named 'hello_oniks.py' that contains the code 'print(\"Hello ONIKS\")'. Second, use the edit_file tool to refactor that file, replacing the string 'Hello ONIKS' with 'K Prize Mission Ready!'. Finally, execute the refactored script."
+    initial_state.data['goal'] = "Your task is to simulate a safe update of the configuration file. Follow these steps carefully: 1. Using the write_file tool, create a file named app_config.json that contains the following JSON: {\"version\": \"1.0\", \"status\": \"alpha\"}. 2. Using the file_search_replace tool, update the application status. Find the substring \"status\": \"alpha\" in the app_config.json file and replace it with \"status\": \"production\". 3. Using the execute_bash_command tool, output the contents of the app_config.json file to the console so that we can verify that the change was applied correctly."
     initial_state.add_message("Demo started with complex goal that will be decomposed into atomic subtasks")
     
     print(f"   Goal: {initial_state.data['goal']}")
