@@ -7,6 +7,9 @@ that can be executed sequentially by the reasoning agent.
 
 import json
 import logging
+import traceback
+import uuid
+from datetime import datetime
 from typing import List, Optional, TYPE_CHECKING
 
 from oniks.agents.base import BaseAgent
@@ -120,11 +123,25 @@ class PlannerAgent(BaseAgent):
         
         result_state.add_message("Generated task decomposition prompt")
         
+        # Generate unique agent execution ID for correlation
+        agent_execution_id = str(uuid.uuid4())[:8]
+        timestamp = datetime.now().isoformat()
+        
+        # BULLETPROOF LOGGING: Log agent execution start
+        logger.info(f"[PLANNER-{agent_execution_id}] Starting LLM-powered decomposition at {timestamp}")
+        logger.info(f"[PLANNER-{agent_execution_id}] Goal to decompose: {goal}")
+        logger.info(f"[PLANNER-{agent_execution_id}] Available tools: {[tool.name for tool in self.available_tools]}")
+        
         # Invoke LLM to get task decomposition
         try:
+            logger.info(f"[PLANNER-{agent_execution_id}] Calling LLM for task decomposition")
             raw_llm_response = self.llm_client.invoke(decomposition_prompt)
             result_state.data['decomposition_response'] = raw_llm_response
-            result_state.add_message("Successfully received decomposition from LLM")
+            
+            # BULLETPROOF LOGGING: Log successful LLM response
+            success_timestamp = datetime.now().isoformat()
+            logger.info(f"[PLANNER-{agent_execution_id}] LLM decomposition completed at {success_timestamp}")
+            result_state.add_message(f"[LLM-POWERED] Successfully received decomposition from LLM (execution: {agent_execution_id})")
             
             # Parse the LLM response to extract tool call sequence
             tool_call_list = self._parse_decomposition_response(raw_llm_response)
@@ -134,21 +151,40 @@ class PlannerAgent(BaseAgent):
             
             # Store the plan in state
             result_state.data['plan'] = tool_call_list
-            result_state.add_message(f"Created tool-based plan with {len(tool_call_list)} steps")
+            result_state.add_message(f"[LLM-POWERED] Created tool-based plan with {len(tool_call_list)} steps")
             
             # Log the created plan for debugging
+            logger.info(f"[PLANNER-{agent_execution_id}] Generated plan with {len(tool_call_list)} steps:")
             for i, tool_call in enumerate(tool_call_list, 1):
-                result_state.add_message(f"  Step {i}: {tool_call}")
+                result_state.add_message(f"  [LLM-POWERED] Step {i}: {tool_call}")
+                logger.info(f"[PLANNER-{agent_execution_id}] Step {i}: {tool_call}")
+            
+            logger.info(f"[PLANNER-{agent_execution_id}] LLM-powered decomposition completed successfully")
             
         except Exception as e:
-            logger.error(f"Error during task decomposition: {e}")
-            result_state.add_message(f"Task decomposition failed: {str(e)}")
-            result_state.add_message("Falling back to basic decomposition")
+            # BULLETPROOF LOGGING: Log complete error details
+            error_timestamp = datetime.now().isoformat()
+            logger.error(f"[PLANNER-{agent_execution_id}] LLM decomposition failed at {error_timestamp}")
+            logger.error(f"[PLANNER-{agent_execution_id}] Error type: {type(e).__name__}")
+            logger.error(f"[PLANNER-{agent_execution_id}] Error message: {str(e)}")
+            logger.error(f"[PLANNER-{agent_execution_id}] FULL ERROR TRACEBACK BEGINS:")
+            logger.error(f"[PLANNER-{agent_execution_id}] {traceback.format_exc()}")
+            logger.error(f"[PLANNER-{agent_execution_id}] FULL ERROR TRACEBACK ENDS")
+            
+            result_state.add_message(f"[ERROR] Task decomposition failed: {str(e)} (execution: {agent_execution_id})")
+            result_state.add_message(f"[FALLBACK-REASONING] Falling back to hardcoded decomposition logic")
             
             # Fall back to basic decomposition if LLM fails
+            logger.warning(f"[PLANNER-{agent_execution_id}] Switching to fallback reasoning")
             fallback_plan = self._perform_basic_decomposition(goal)
             result_state.data['plan'] = fallback_plan
-            result_state.add_message(f"Created fallback plan with {len(fallback_plan)} subtasks")
+            result_state.add_message(f"[FALLBACK-REASONING] Created hardcoded plan with {len(fallback_plan)} subtasks")
+            
+            # Log fallback plan details
+            logger.info(f"[PLANNER-{agent_execution_id}] Fallback plan with {len(fallback_plan)} steps:")
+            for i, task in enumerate(fallback_plan, 1):
+                result_state.add_message(f"  [FALLBACK-REASONING] Step {i}: {task}")
+                logger.info(f"[PLANNER-{agent_execution_id}] Fallback Step {i}: {task}")
         
         result_state.add_message(f"Planner agent {self.name} completed task decomposition")
         
@@ -277,12 +313,19 @@ Create a sequence of tool calls to achieve the goal:"""
         This method implements simple hardcoded decomposition logic as a fallback
         when the LLM service is unavailable or encounters errors.
         
+        ALL PLANS GENERATED BY THIS METHOD ARE CLEARLY MARKED AS [FALLBACK-REASONING]
+        TO DISTINGUISH FROM REAL LLM-POWERED DECOMPOSITION.
+        
         Args:
             goal: The high-level goal to decompose.
             
         Returns:
             List of basic subtasks based on pattern matching.
-        """
+        """  
+        # BULLETPROOF LOGGING: Log fallback reasoning activation
+        fallback_id = str(uuid.uuid4())[:8]
+        logger.warning(f"[FALLBACK-{fallback_id}] USING HARDCODED FALLBACK REASONING - NO LLM INVOLVED")
+        logger.warning(f"[FALLBACK-{fallback_id}] Goal to decompose: {goal}")
         original_goal = goal
         if not isinstance(goal, str):
             goal = str(goal) if goal is not None else ""
@@ -292,21 +335,25 @@ Create a sequence of tool calls to achieve the goal:"""
         # Handle the common demo case
         if ("create" in goal_lower and "hello.txt" in goal_lower and 
             "hello oniks" in goal_lower and "display" in goal_lower):
-            return [
+            plan = [
                 "write_file(file_path='hello.txt', content='Hello ONIKS!')",
                 "execute_bash_command(command='cat hello.txt')",
                 "task_complete()"
             ]
+            logger.warning(f"[FALLBACK-{fallback_id}] Generated demo plan: {plan}")
+            return plan
         
         # Handle directory creation with file creation
         if ("create" in goal_lower and "directory" in goal_lower and 
             "output" in goal_lower and "log.txt" in goal_lower and
             "system test ok" in goal_lower):
-            return [
+            plan = [
                 "create_directory(path='output')",
                 "write_file(file_path='output/log.txt', content='System test OK')",
                 "task_complete()"
             ]
+            logger.warning(f"[FALLBACK-{fallback_id}] Generated directory creation plan: {plan}")
+            return plan
         
         # Handle simple file operations
         if "create" in goal_lower and "file" in goal_lower:
@@ -319,16 +366,20 @@ Create a sequence of tool calls to achieve the goal:"""
                 if file_match:
                     filename = file_match.group(1)
                 
-                return [
+                plan = [
                     f"write_file(file_path='{filename}', content='{content}')",
                     f"execute_bash_command(command='cat {filename}')",
                     "task_complete()"
                 ]
+                logger.warning(f"[FALLBACK-{fallback_id}] Generated file creation with display plan: {plan}")
+                return plan
             else:
-                return [
+                plan = [
                     "write_file(file_path='example.txt', content='Example content')",
                     "task_complete()"
                 ]
+                logger.warning(f"[FALLBACK-{fallback_id}] Generated simple file creation plan: {plan}")
+                return plan
         
         # Handle read operations
         if "read" in goal_lower and "file" in goal_lower:
@@ -338,15 +389,19 @@ Create a sequence of tool calls to achieve the goal:"""
             if file_match:
                 filename = file_match.group(1)
             
-            return [
+            plan = [
                 f"read_file(file_path='{filename}')",
                 "task_complete()"
             ]
+            logger.warning(f"[FALLBACK-{fallback_id}] Generated file read plan: {plan}")
+            return plan
         
         # Generic fallback - try to create at least one meaningful tool call
-        return [
+        plan = [
             "task_complete()"
         ]
+        logger.warning(f"[FALLBACK-{fallback_id}] No pattern matched - generated minimal plan: {plan}")
+        return plan
     
     def _is_valid_tool_call(self, tool_call: str) -> bool:
         """Validate if a string represents a valid tool call format.

@@ -5,6 +5,9 @@ running Ollama instances to enable real LLM-powered reasoning in agents.
 """
 
 import logging
+import traceback
+import uuid
+from datetime import datetime
 from typing import Optional
 
 import ollama
@@ -53,6 +56,7 @@ class OllamaClient:
         
         This method sends a text prompt to the specified model running on
         the local Ollama service and returns the generated text response.
+        All requests and responses are logged in full for complete transparency.
         
         Args:
             prompt: The text prompt to send to the model.
@@ -76,7 +80,18 @@ class OllamaClient:
         if not prompt or not prompt.strip():
             raise ValueError("Prompt cannot be empty or None")
         
-        logger.info(f"Sending prompt to Ollama model '{model}' (length: {len(prompt)} chars)")
+        # Generate unique request ID for correlation
+        request_id = str(uuid.uuid4())[:8]
+        timestamp = datetime.now().isoformat()
+        
+        # BULLETPROOF LOGGING: Log complete request details
+        logger.info(f"[LLM-REQUEST-{request_id}] Starting LLM call at {timestamp}")
+        logger.info(f"[LLM-REQUEST-{request_id}] Model: {model}")
+        logger.info(f"[LLM-REQUEST-{request_id}] Host: {self.host}")
+        logger.info(f"[LLM-REQUEST-{request_id}] Prompt length: {len(prompt)} characters")
+        logger.info(f"[LLM-REQUEST-{request_id}] FULL PROMPT BEGINS:")
+        logger.info(f"[LLM-REQUEST-{request_id}] {prompt}")
+        logger.info(f"[LLM-REQUEST-{request_id}] FULL PROMPT ENDS")
         
         try:
             response = self._client.chat(
@@ -96,14 +111,33 @@ class OllamaClient:
             # Extract the message content from the response
             if 'message' in response and 'content' in response['message']:
                 content = response['message']['content'].strip()
-                logger.info(f"Received response from Ollama (length: {len(content)} chars)")
+                
+                # BULLETPROOF LOGGING: Log complete response details
+                response_timestamp = datetime.now().isoformat()
+                logger.info(f"[LLM-RESPONSE-{request_id}] LLM call completed at {response_timestamp}")
+                logger.info(f"[LLM-RESPONSE-{request_id}] Response length: {len(content)} characters")
+                logger.info(f"[LLM-RESPONSE-{request_id}] FULL RESPONSE BEGINS:")
+                logger.info(f"[LLM-RESPONSE-{request_id}] {content}")
+                logger.info(f"[LLM-RESPONSE-{request_id}] FULL RESPONSE ENDS")
+                logger.info(f"[LLM-SUCCESS-{request_id}] LLM call completed successfully")
+                
                 return content
             else:
-                logger.error(f"Unexpected response format: {response}")
+                # BULLETPROOF LOGGING: Log unexpected response format with full details
+                logger.error(f"[LLM-ERROR-{request_id}] Unexpected response format from Ollama")
+                logger.error(f"[LLM-ERROR-{request_id}] FULL RESPONSE DUMP: {response}")
                 raise OllamaConnectionError("Received unexpected response format from Ollama")
                 
         except ResponseError as e:
-            logger.error(f"Ollama API error: {e}")
+            # BULLETPROOF LOGGING: Log complete error details with full traceback
+            error_timestamp = datetime.now().isoformat()
+            logger.error(f"[LLM-ERROR-{request_id}] Ollama API error at {error_timestamp}")
+            logger.error(f"[LLM-ERROR-{request_id}] Error type: {type(e).__name__}")
+            logger.error(f"[LLM-ERROR-{request_id}] Error message: {str(e)}")
+            logger.error(f"[LLM-ERROR-{request_id}] FULL TRACEBACK BEGINS:")
+            logger.error(f"[LLM-ERROR-{request_id}] {traceback.format_exc()}")
+            logger.error(f"[LLM-ERROR-{request_id}] FULL TRACEBACK ENDS")
+            
             if "connection" in str(e).lower() or "refused" in str(e).lower():
                 raise OllamaConnectionError(
                     f"Unable to connect to Ollama service at {self.host}. "
@@ -113,7 +147,15 @@ class OllamaClient:
                 raise OllamaConnectionError(f"Ollama API error: {e}") from e
                 
         except Exception as e:
-            logger.error(f"Unexpected error during Ollama invocation: {e}")
+            # BULLETPROOF LOGGING: Log complete unexpected error details
+            error_timestamp = datetime.now().isoformat()
+            logger.error(f"[LLM-ERROR-{request_id}] Unexpected error at {error_timestamp}")
+            logger.error(f"[LLM-ERROR-{request_id}] Error type: {type(e).__name__}")
+            logger.error(f"[LLM-ERROR-{request_id}] Error message: {str(e)}")
+            logger.error(f"[LLM-ERROR-{request_id}] FULL TRACEBACK BEGINS:")
+            logger.error(f"[LLM-ERROR-{request_id}] {traceback.format_exc()}")
+            logger.error(f"[LLM-ERROR-{request_id}] FULL TRACEBACK ENDS")
+            
             raise OllamaConnectionError(
                 f"Unexpected error communicating with Ollama service: {e}"
             ) from e

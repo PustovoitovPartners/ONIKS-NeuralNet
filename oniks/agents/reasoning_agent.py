@@ -9,6 +9,9 @@ import re
 import json
 import ast
 import logging
+import traceback
+import uuid
+from datetime import datetime
 from typing import List, Optional, TYPE_CHECKING
 
 from oniks.agents.base import BaseAgent
@@ -133,31 +136,59 @@ class ReasoningAgent(BaseAgent):
             result_state.add_message("Final confirmation task detected, selecting task_complete tool")
             return result_state
         
+        # Generate unique agent execution ID for correlation
+        agent_execution_id = str(uuid.uuid4())[:8]
+        timestamp = datetime.now().isoformat()
+        
+        # BULLETPROOF LOGGING: Log reasoning agent execution start
+        logger.info(f"[REASONING-{agent_execution_id}] Starting LLM-powered reasoning at {timestamp}")
+        logger.info(f"[REASONING-{agent_execution_id}] Current task: {current_task}")
+        logger.info(f"[REASONING-{agent_execution_id}] Available tools: {[tool.name for tool in self.tools]}")
+        
         # Generate simplified prompt for tool selection
         generated_prompt = self._generate_task_prompt(current_task)
         result_state.data['last_prompt'] = generated_prompt
         
-        result_state.add_message("Generated simplified prompt for tool selection")
+        logger.info(f"[REASONING-{agent_execution_id}] Generated prompt for tool selection")
+        result_state.add_message(f"[LLM-POWERED] Generated prompt for tool selection (execution: {agent_execution_id})")
         
         # Invoke LLM to get reasoning results
         try:
+            logger.info(f"[REASONING-{agent_execution_id}] Calling LLM for tool selection")
             raw_llm_response = self.llm_client.invoke(generated_prompt)
             result_state.data['llm_response'] = raw_llm_response
-            result_state.add_message("Successfully received response from LLM")
+            
+            # BULLETPROOF LOGGING: Log successful LLM response
+            success_timestamp = datetime.now().isoformat()
+            logger.info(f"[REASONING-{agent_execution_id}] LLM reasoning completed at {success_timestamp}")
+            result_state.add_message(f"[LLM-POWERED] Successfully received response from LLM (execution: {agent_execution_id})")
             
             # Sanitize the raw LLM response before parsing
             sanitized_response = self._sanitize_llm_response(raw_llm_response)
-            result_state.add_message("Applied sanitization to LLM response")
+            result_state.add_message(f"[LLM-POWERED] Applied sanitization to LLM response")
             
             # Parse the sanitized LLM response to extract tool and arguments
             self._parse_llm_response(sanitized_response, result_state)
             
+            logger.info(f"[REASONING-{agent_execution_id}] LLM-powered reasoning completed successfully")
+            logger.info(f"[REASONING-{agent_execution_id}] Selected tool: {result_state.data.get('next_tool', 'None')}")
+            logger.info(f"[REASONING-{agent_execution_id}] Tool arguments: {result_state.data.get('tool_args', {})}")
+            
         except Exception as e:
-            logger.error(f"Error during LLM invocation: {e}")
-            result_state.add_message(f"LLM invocation failed: {str(e)}")
-            result_state.add_message("Falling back to basic reasoning")
+            # BULLETPROOF LOGGING: Log complete error details
+            error_timestamp = datetime.now().isoformat()
+            logger.error(f"[REASONING-{agent_execution_id}] LLM reasoning failed at {error_timestamp}")
+            logger.error(f"[REASONING-{agent_execution_id}] Error type: {type(e).__name__}")
+            logger.error(f"[REASONING-{agent_execution_id}] Error message: {str(e)}")
+            logger.error(f"[REASONING-{agent_execution_id}] FULL ERROR TRACEBACK BEGINS:")
+            logger.error(f"[REASONING-{agent_execution_id}] {traceback.format_exc()}")
+            logger.error(f"[REASONING-{agent_execution_id}] FULL ERROR TRACEBACK ENDS")
+            
+            result_state.add_message(f"[ERROR] LLM invocation failed: {str(e)} (execution: {agent_execution_id})")
+            result_state.add_message(f"[FALLBACK-REASONING] Falling back to hardcoded reasoning logic")
             
             # Fall back to basic reasoning if LLM fails
+            logger.warning(f"[REASONING-{agent_execution_id}] Switching to fallback reasoning")
             self._perform_basic_reasoning(current_task, result_state)
         
         result_state.add_message(f"Reasoning agent {self.name} completed analysis")
@@ -668,10 +699,17 @@ The task is atomic and self-contained - simply choose the tool that directly acc
         when the LLM service is unavailable or encounters errors. Since tasks
         are now atomic, the logic is much simpler.
         
+        ALL REASONING PERFORMED BY THIS METHOD IS CLEARLY MARKED AS [FALLBACK-REASONING]
+        TO DISTINGUISH FROM REAL LLM-POWERED REASONING.
+        
         Args:
             current_task: The current atomic subtask to analyze.
             state: The state object to update with reasoning results.
         """
+        # BULLETPROOF LOGGING: Log fallback reasoning activation
+        fallback_id = str(uuid.uuid4())[:8]
+        logger.warning(f"[FALLBACK-{fallback_id}] USING HARDCODED FALLBACK REASONING - NO LLM INVOLVED")
+        logger.warning(f"[FALLBACK-{fallback_id}] Task to analyze: {current_task}")
         # Handle non-string tasks gracefully
         if not isinstance(current_task, str):
             current_task = str(current_task) if current_task is not None else ""
@@ -696,8 +734,9 @@ The task is atomic and self-contained - simply choose the tool that directly acc
             state.data['file_path'] = filename
             state.data['content'] = content
             
+            logger.warning(f"[FALLBACK-{fallback_id}] Selected tool: write_file with args: {{file_path: {filename}, content: {content}}}")
             state.add_message(
-                f"Fallback reasoning: Creating file {filename} with content '{content}'"
+                f"[FALLBACK-REASONING] Creating file {filename} with content '{content}' (fallback: {fallback_id})"
             )
         
         # Display/show file content tasks
@@ -711,8 +750,9 @@ The task is atomic and self-contained - simply choose the tool that directly acc
             state.data['tool_args'] = {'command': f'cat {filename}'}
             state.data['command'] = f'cat {filename}'
             
+            logger.warning(f"[FALLBACK-{fallback_id}] Selected tool: execute_bash_command with command: cat {filename}")
             state.add_message(
-                f"Fallback reasoning: Displaying content of {filename} using cat command"
+                f"[FALLBACK-REASONING] Displaying content of {filename} using cat command (fallback: {fallback_id})"
             )
         
         # List files tasks
@@ -720,8 +760,9 @@ The task is atomic and self-contained - simply choose the tool that directly acc
             state.data['next_tool'] = 'list_files'
             state.data['tool_args'] = {}
             
+            logger.warning(f"[FALLBACK-{fallback_id}] Selected tool: list_files with no args")
             state.add_message(
-                "Fallback reasoning: Listing files using list_files tool"
+                f"[FALLBACK-REASONING] Listing files using list_files tool (fallback: {fallback_id})"
             )
         
         # Read file tasks
@@ -734,17 +775,22 @@ The task is atomic and self-contained - simply choose the tool that directly acc
             state.data['tool_args'] = {'file_path': filename}
             state.data['file_path'] = filename
             
+            logger.warning(f"[FALLBACK-{fallback_id}] Selected tool: read_file with file_path: {filename}")
             state.add_message(
-                f"Fallback reasoning: Reading file {filename} using read_file tool"
+                f"[FALLBACK-REASONING] Reading file {filename} using read_file tool (fallback: {fallback_id})"
             )
         
         else:
+            logger.warning(f"[FALLBACK-{fallback_id}] No pattern matched - defaulting to task_complete")
             state.add_message(
-                f"No specific fallback reasoning rule matched for task: {current_task}"
+                f"[FALLBACK-REASONING] No specific reasoning rule matched for task: {current_task} (fallback: {fallback_id})"
             )
             # Default to task completion if we can't figure out what to do
             state.data['next_tool'] = 'task_complete'
             state.data['tool_args'] = {}
+            state.add_message(
+                f"[FALLBACK-REASONING] Defaulting to task_complete (fallback: {fallback_id})"
+            )
     
     def get_available_tools(self) -> List["Tool"]:
         """Get the list of available tools for this agent.
