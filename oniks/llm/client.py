@@ -105,7 +105,8 @@ class OllamaClient:
                 options={
                     'temperature': 0.7,
                     'num_ctx': 4096,
-                }
+                },
+                timeout=self.timeout
             )
             
             # STRICT VALIDATION: Validate response structure and content
