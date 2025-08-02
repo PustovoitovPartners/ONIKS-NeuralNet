@@ -277,17 +277,17 @@ class PlannerAgent(BaseAgent):
         return result_state
     
     def _generate_decomposition_prompt(self, goal: str) -> str:
-        """Generate a structured prompt for tool-based task decomposition.
+        """Generate a structured prompt with harsh rules to combat lazy optimization.
         
-        Creates a comprehensive prompt that instructs the LLM to break down
-        the complex goal into a sequence of concrete tool calls. The prompt emphasizes
-        using only available tools with proper function call syntax.
+        Creates a comprehensive prompt that FORCES the LLM to break down
+        the complex goal into MANDATORY sequential steps. The prompt uses
+        imperative language and explicit prohibitions to prevent optimization.
         
         Args:
             goal: The high-level goal to decompose.
             
         Returns:
-            Formatted prompt string for tool-based decomposition.
+            Formatted prompt string for MANDATORY sequential decomposition.
         """
         # Build the available tools section
         tools_section = "--- AVAILABLE TOOLS ---\n"
@@ -299,49 +299,105 @@ class PlannerAgent(BaseAgent):
                 description = getattr(tool, 'description', None) or "[Description not provided]"
                 tools_section += f"- {tool.name}: {description}\n"
         
-        prompt = f"""--- TOOL-BASED TASK DECOMPOSITION REQUEST ---
+        prompt = f"""--- CRITICAL: MANDATORY SEQUENTIAL TASK DECOMPOSITION ---
 
-You are a strategic task planner. Your job is to create a sequence of tool calls to achieve the goal.
-Each step in your plan should be a call to one of the available tools.
+ATTENTION: You are in STRICT SEQUENTIAL MODE. This is NOT a suggestion - it is a MANDATORY REQUIREMENT.
 
 --- GOAL TO ACHIEVE ---
 {goal}
 
 {tools_section}
---- DECOMPOSITION RULES ---
-1. Create a sequence of tool calls to achieve the goal
-2. Each step must be a valid function call using available tools
-3. Use proper function call syntax: tool_name(arg1='value1', arg2='value2')
-4. Order tool calls logically from first to last
-5. Be specific about file names, paths, content, and commands
-6. Only use tools from the available tools list above
-7. Do not include a final task_complete() call - this will be added automatically
+--- CRITICAL FAILURE WARNING ---
+ATTENTION: The goal MUST be executed in the EXACT sequence specified. Violating the sequence of steps is a CRITICAL FAILURE.
+
+YOU ARE ABSOLUTELY FORBIDDEN FROM:
+- Optimizing or combining steps
+- Jumping directly to final results
+- Writing final content in initial steps
+- Skipping intermediate states
+- Creating "smart shortcuts"
+
+--- MANDATORY SEQUENTIAL EXECUTION RULES ---
+
+RULE 1: SEQUENCE VIOLATION IS PROHIBITED
+- Each step MUST create a distinct intermediate state
+- Each step MUST depend on the previous step's output
+- You CANNOT optimize the sequence - this is STRICTLY PROHIBITED
+
+RULE 2: STATE VALIDATION REQUIRED
+- Before each step, analyze what state was created by the previous step
+- Each step must operate on the intermediate state, not jump to final result
+- You MUST validate that each step produces a different state
+
+RULE 3: INTERMEDIATE CONTENT CREATION MANDATORY
+- If the goal involves content modification, you MUST create initial content first
+- NEVER write final content directly - this is FORBIDDEN
+- Create initial state, THEN modify it in subsequent steps
+
+RULE 4: STEP DEPENDENCY ANALYSIS REQUIRED
+- Each step must explicitly depend on outputs from previous steps
+- You CANNOT skip dependencies - this is a CRITICAL FAILURE
+- Think: "What does step N need from step N-1?"
+
+RULE 5: PYTHON EXECUTION MUST USE VIRTUAL ENVIRONMENT
+- ALL Python commands MUST use virtual environment activation
+- Format: execute_bash_command(command='source venv/bin/activate && python script.py')
+- NEVER execute Python directly without venv activation
+
+--- MANDATORY EXECUTION PATTERN ---
+
+For content creation + modification goals, you MUST follow this pattern:
+STEP 1: Create file with INITIAL content (not final content)
+STEP 2: Modify the initial content using search/replace operations
+STEP 3: Execute/verify the modified content
+
+CRITICAL: Step 1 CANNOT contain final content - this is FORBIDDEN
+
+--- VALIDATION CHECKLIST ---
+Before providing your answer, verify:
+□ Each step creates a different intermediate state
+□ No step jumps directly to the final result
+□ Initial content is NOT the final content
+□ Each step has explicit dependencies on previous steps
+□ Python commands use venv activation
+□ No optimization or "smart shortcuts" were applied
 
 --- OUTPUT FORMAT ---
-Provide the tool call sequence as a numbered list, one call per line:
-1. first_tool(arg='value')
-2. second_tool(arg1='value1', arg2='value2')
-3. third_tool()
-(and so on...)
+Provide the tool call sequence as a numbered list:
+1. first_tool(parameters_for_initial_state)
+2. second_tool(parameters_that_modify_previous_state)
+3. third_tool(parameters_that_use_modified_state)
 
---- EXAMPLES ---
+--- MANDATORY EXAMPLES ---
 
-Example 1:
-Goal: Create a file hello.txt with 'Hello World' and display its content
-Available Tools: write_file, execute_bash_command
-Output:
-1. write_file(file_path='hello.txt', content='Hello World')
-2. execute_bash_command(command='cat hello.txt')
+CORRECT Example - Content Creation + Modification:
+Goal: Create hello_oniks.py that prints "K Prize Mission Ready!" and execute it
+CORRECT sequence (MANDATORY):
+1. write_file(file_path='hello_oniks.py', content='print("Hello ONIKS")')  # Initial content
+2. file_search_replace(file_path='hello_oniks.py', search_pattern='"Hello ONIKS"', replace_with='"K Prize Mission Ready!"')  # Modify content
+3. execute_bash_command(command='source venv/bin/activate && python hello_oniks.py')  # Execute modified file
 
-Example 2:
-Goal: List all files and create a summary file
-Available Tools: list_files, write_file
-Output:
-1. list_files(path='.')
-2. write_file(file_path='file_summary.txt', content='File listing complete')
+FORBIDDEN Example - Direct Optimization:
+1. write_file(file_path='hello_oniks.py', content='print("K Prize Mission Ready!")')  # FORBIDDEN - skips intermediate state
+2. execute_bash_command(command='source venv/bin/activate && python hello_oniks.py')
 
---- YOUR TOOL SEQUENCE ---
-Create a sequence of tool calls to achieve the goal:"""
+WHY THE CORRECT EXAMPLE IS MANDATORY:
+- Step 1 creates intermediate state (file with initial content)
+- Step 2 depends on Step 1's output and modifies it
+- Step 3 depends on Step 2's modification and executes result
+- Each step produces a DIFFERENT state
+
+CORRECT Example - File Processing:
+Goal: Create config.json with initial values, then update port to 8080, then validate
+CORRECT sequence (MANDATORY):
+1. write_file(file_path='config.json', content='{"port": 3000, "host": "localhost"}')  # Initial state
+2. file_search_replace(file_path='config.json', search_pattern='"port": 3000', replace_with='"port": 8080')  # Modified state
+3. execute_bash_command(command='cat config.json')  # Validate final state
+
+--- YOUR MANDATORY TOOL SEQUENCE ---
+CRITICAL REMINDER: You MUST create intermediate states. You CANNOT optimize. Follow the sequence exactly.
+
+Create your MANDATORY sequential tool calls to achieve the goal:"""
 
         return prompt
     
