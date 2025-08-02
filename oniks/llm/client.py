@@ -5,6 +5,7 @@ running Ollama instances to enable real LLM-powered reasoning in agents.
 """
 
 import logging
+import signal
 import traceback
 import uuid
 from datetime import datetime
@@ -20,6 +21,16 @@ logger = logging.getLogger(__name__)
 class OllamaConnectionError(Exception):
     """Raised when connection to Ollama service fails."""
     pass
+
+
+class TimeoutError(Exception):
+    """Raised when operation times out."""
+    pass
+
+
+def timeout_handler(signum, frame):
+    """Signal handler for timeout."""
+    raise TimeoutError("Operation timed out")
 
 
 class OllamaClient:
@@ -94,20 +105,27 @@ class OllamaClient:
         logger.info(f"[LLM-REQUEST-{request_id}] FULL PROMPT ENDS")
         
         try:
-            response = self._client.chat(
-                model=model,
-                messages=[
-                    {
-                        'role': 'user',
-                        'content': prompt
+            # Set up timeout using signal
+            signal.signal(signal.SIGALRM, timeout_handler)
+            signal.alarm(self.timeout)
+            
+            try:
+                response = self._client.chat(
+                    model=model,
+                    messages=[
+                        {
+                            'role': 'user',
+                            'content': prompt
+                        }
+                    ],
+                    options={
+                        'temperature': 0.7,
+                        'num_ctx': 4096,
                     }
-                ],
-                options={
-                    'temperature': 0.7,
-                    'num_ctx': 4096,
-                },
-                timeout=self.timeout
-            )
+                )
+            finally:
+                # Always clear the alarm
+                signal.alarm(0)
             
             # STRICT VALIDATION: Validate response structure and content
             if not response:
@@ -185,6 +203,12 @@ class OllamaClient:
             logger.info(f"[LLM-SUCCESS-{request_id}] LLM call completed successfully - HTTP 200 + valid content")
             
             return content
+        
+        except TimeoutError:
+            # Handle timeout specifically
+            error_timestamp = datetime.now().isoformat()
+            logger.error(f"[LLM-TIMEOUT-{request_id}] LLM request timed out after {self.timeout} seconds at {error_timestamp}")
+            raise OllamaConnectionError(f"LLM request timed out after {self.timeout} seconds")
                 
         except ResponseError as e:
             # BULLETPROOF LOGGING: Log complete error details with full traceback
