@@ -262,7 +262,7 @@ def main() -> None:
     # Create agents and nodes with dual-circuit configuration
     print("5. Creating agents and nodes...")
     # RouterAgent with phi3:mini for fast classification (Circuit 1)
-    router_agent = RouterAgent("router_agent", llm_client, routing_model="phi3:mini", main_model="llama3:8b", timeout_seconds=15.0)
+    router_agent = RouterAgent("router_agent", llm_client, routing_model="phi3:mini", main_model="llama3:8b", timeout_seconds=30.0)
     # PlannerAgent with llama3:8b for complex planning (Circuit 2)
     planner_agent = PlannerAgent("planner_agent", llm_client, tools, timeout_seconds=1200.0)
     reasoning_agent = ReasoningAgent("reasoning_agent", tools, llm_client)
