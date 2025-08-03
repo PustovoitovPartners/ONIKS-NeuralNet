@@ -26,16 +26,20 @@ logger = logging.getLogger(__name__)
 
 
 class RouterAgent(BaseAgent):
-    """Fast LLM-powered agent that classifies task complexity for intelligent routing.
+    """Dual-circuit fast LLM-powered agent that classifies task complexity for intelligent routing.
     
-    The RouterAgent makes one fast LLM query to classify tasks as "simple" or "complex"
-    and adds the appropriate execution_path to the state. This enables the system to
-    optimize simple tasks for speed while maintaining quality for complex workflows.
+    The RouterAgent implements a dual-circuit decision-making system for optimal performance:
+    - Circuit 1: Fast classification using lightweight LLM (phi3:mini) with 15-second timeout
+    - Circuit 2: Keyword-based fallback classification when LLM fails
+    
+    This approach provides lightning-fast task classification while maintaining reliability
+    through graceful degradation to keyword-based analysis.
     
     Key Features:
-    - Fast classification with 30-second timeout
-    - Lightweight prompts focused only on classification
-    - Graceful degradation (defaults to 'hierarchical' on failure)
+    - Ultra-fast classification with 15-second timeout (aggressive)
+    - Lightweight phi3:mini model for speed
+    - Minimal 50-word prompts for fast processing
+    - Multi-layer fallback system (LLM → keyword → hierarchical)
     - Clear execution path routing for graph optimization
     
     Classification Logic:
@@ -44,12 +48,14 @@ class RouterAgent(BaseAgent):
     
     Attributes:
         llm_client: OllamaClient instance for LLM interactions.
-        timeout_seconds: Maximum time for classification (default: 30 seconds).
+        routing_model: Lightweight model for fast classification (default: "phi3:mini").
+        main_model: Main model for complex operations (default: "llama3:8b").
+        timeout_seconds: Maximum time for classification (default: 15 seconds).
     
     Example:
         >>> from oniks.llm.client import OllamaClient
         >>> llm_client = OllamaClient()
-        >>> agent = RouterAgent("router", llm_client)
+        >>> agent = RouterAgent("router", llm_client, routing_model="phi3:mini")
         >>> state = State()
         >>> state.data['goal'] = 'Create file hello.txt with Hello World!'
         >>> result_state = agent.execute(state)
@@ -57,14 +63,16 @@ class RouterAgent(BaseAgent):
         direct
     """
     
-    def __init__(self, name: str, llm_client: "OllamaClient", timeout_seconds: float = 30.0) -> None:
-        """Initialize the RouterAgent with LLM client and timeout.
+    def __init__(self, name: str, llm_client: "OllamaClient", routing_model: str = "phi3:mini", main_model: str = "llama3:8b", timeout_seconds: float = 15.0) -> None:
+        """Initialize the RouterAgent with LLM client and dual-circuit configuration.
         
         Args:
             name: Unique identifier for this agent.
             llm_client: OllamaClient instance for LLM interactions.
+            routing_model: Lightweight model for fast classification (default: "phi3:mini").
+            main_model: Main model for complex operations (default: "llama3:8b").
             timeout_seconds: Maximum time allowed for classification in seconds.
-                           Defaults to 30.0 seconds for fast routing.
+                           Defaults to 15.0 seconds for fast classification.
             
         Raises:
             ValueError: If name is empty, None, llm_client is None, or timeout_seconds is not positive.
@@ -78,6 +86,8 @@ class RouterAgent(BaseAgent):
             raise ValueError(f"Timeout seconds must be a positive number, got {timeout_seconds}")
         
         self.llm_client = llm_client
+        self.routing_model = routing_model
+        self.main_model = main_model
         self.timeout_seconds = timeout_seconds
     
     def execute(self, state: "State") -> "State":
@@ -147,10 +157,20 @@ class RouterAgent(BaseAgent):
                 logger.warning(f"[ROUTER-{agent_execution_id}] Timeout before LLM call - elapsed {elapsed_time:.2f}s >= {self.timeout_seconds}s")
                 return result_state
             
-            logger.info(f"[ROUTER-{agent_execution_id}] Calling LLM for fast classification")
+            logger.info(f"[ROUTER-{agent_execution_id}] Calling LLM for fast classification using {self.routing_model}")
             
-            # Make fast LLM call for classification
-            raw_llm_response = self.llm_client.invoke(classification_prompt)
+            # Make fast LLM call for classification using routing model
+            try:
+                raw_llm_response = self.llm_client.invoke(classification_prompt, model=self.routing_model)
+            except Exception as routing_error:
+                # Fallback to keyword-based classification if routing model fails
+                logger.warning(f"[ROUTER-{agent_execution_id}] Routing model {self.routing_model} failed: {routing_error}")
+                result_state.add_message(f"[ROUTER-FALLBACK] Routing model failed: {routing_error} - using keyword classification")
+                execution_path = self._keyword_classification_fallback(goal)
+                result_state.data['execution_path'] = execution_path
+                result_state.add_message(f"[ROUTER-FALLBACK] Keyword classification result: {execution_path}")
+                logger.info(f"[ROUTER-{agent_execution_id}] Keyword fallback classified as: {execution_path}")
+                return result_state
             
             # Check timeout after LLM call
             elapsed_time = time.time() - start_time
@@ -206,53 +226,29 @@ class RouterAgent(BaseAgent):
         return result_state
     
     def _generate_classification_prompt(self, goal: str) -> str:
-        """Generate a lightweight prompt focused only on task complexity classification.
+        """Generate an ultra-lightweight prompt for fast classification with phi3:mini.
         
-        Creates a minimal, fast prompt that asks the LLM to classify the task
-        as either simple or complex without requiring detailed analysis.
+        Creates a minimal prompt optimized for speed with the lightweight routing model.
+        Uses only essential information and expects a single word response.
         
         Args:
             goal: The user goal to classify.
             
         Returns:
-            Formatted prompt string for fast classification.
+            Formatted prompt string for ultra-fast classification.
         """
-        prompt = f"""--- FAST TASK CLASSIFICATION ---
+        prompt = f"""Task: {goal}
 
-GOAL TO CLASSIFY:
-{goal}
+SIMPLE = single file operation, one step
+COMPLEX = multiple steps, dependencies, "then"
 
-CLASSIFICATION RULES:
+Examples:
+SIMPLE: "Create hello.txt with content X"
+COMPLEX: "Create file, then modify it, then execute"
 
-SIMPLE TASKS (use "SIMPLE"):
-- Single file operations (create, read, write one file)
-- Single command executions
-- Direct operations with no dependencies
-- Tasks that can be completed in 1-2 steps
+Response (one word): SIMPLE or COMPLEX
 
-Examples of SIMPLE:
-- "Create a file named hello.txt with content X"
-- "Execute command ls -la"
-- "Read file data.txt"
-- "Write Hello World to output.txt"
-
-COMPLEX TASKS (use "COMPLEX"):
-- Multi-step workflows
-- Tasks with "then" or "after" conditions
-- Multiple file operations
-- Tasks requiring intermediate states
-- Conditional logic or dependencies
-
-Examples of COMPLEX:
-- "Create file X, then modify it, then execute it"
-- "First do A, then do B based on result"
-- "Create multiple files and configure them"
-- "Process file A, extract data, write to file B"
-
-INSTRUCTION:
-Respond with exactly one word: either "SIMPLE" or "COMPLEX"
-
-CLASSIFICATION:"""
+Classification:"""
 
         return prompt
     
@@ -286,3 +282,52 @@ CLASSIFICATION:"""
             # Unclear response - default to hierarchical for safety
             logger.warning(f"Unclear classification response: {response[:100]}... - defaulting to hierarchical")
             return 'hierarchical'
+    
+    def _keyword_classification_fallback(self, goal: str) -> str:
+        """Fallback keyword-based classification when routing model is unavailable.
+        
+        Uses simple keyword analysis to classify tasks when the lightweight LLM
+        routing model fails or is unavailable. Always defaults to 'hierarchical'
+        for safety when in doubt.
+        
+        Args:
+            goal: The user goal to classify.
+            
+        Returns:
+            'direct' for simple tasks, 'hierarchical' for complex tasks or unclear cases.
+        """
+        if not isinstance(goal, str):
+            logger.warning("Invalid goal type for keyword classification")
+            return 'hierarchical'
+        
+        goal_lower = goal.lower().strip()
+        
+        # Keywords that indicate complex tasks (multi-step, conditional)
+        complex_keywords = [
+            'then', 'after', 'next', 'first', 'second', 'third',
+            'before', 'once', 'when', 'if', 'configure', 'setup',
+            'modify', 'update', 'change', 'process', 'extract',
+            'based on', 'depending on', 'multiple', 'several'
+        ]
+        
+        # Keywords that indicate simple tasks (single operations)
+        simple_keywords = [
+            'create a file', 'write file', 'read file', 'execute',
+            'run command', 'display', 'show', 'list', 'print'
+        ]
+        
+        # Check for complex keywords first (safety-first approach)
+        for keyword in complex_keywords:
+            if keyword in goal_lower:
+                logger.debug(f"Keyword classification: COMPLEX (found '{keyword}')")
+                return 'hierarchical'
+        
+        # Check for simple keywords
+        for keyword in simple_keywords:
+            if keyword in goal_lower:
+                logger.debug(f"Keyword classification: SIMPLE (found '{keyword}')")
+                return 'direct'
+        
+        # Default to hierarchical for safety
+        logger.debug("Keyword classification: COMPLEX (no clear indicators, defaulting to safe option)")
+        return 'hierarchical'

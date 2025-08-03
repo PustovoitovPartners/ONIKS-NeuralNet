@@ -218,7 +218,8 @@ class PlannerAgent(BaseAgent):
             logger.info(f"[PLANNER-{agent_execution_id}] Calling LLM for task decomposition (STRICT MODE)")
             
             # Call LLM with timeout awareness - this may throw OllamaConnectionError or other exceptions
-            raw_llm_response = self.llm_client.invoke(decomposition_prompt)
+            # Always use the main model (llama3:8b) for complex planning
+            raw_llm_response = self.llm_client.invoke(decomposition_prompt, model="llama3:8b")
             
             # Check timeout after LLM call
             elapsed_time = time.time() - start_time

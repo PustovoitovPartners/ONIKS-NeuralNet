@@ -51,18 +51,20 @@ class OllamaClient:
         The capital of France is Paris.
     """
     
-    def __init__(self, host: str = "http://localhost:11434", timeout: int = 1200) -> None:
+    def __init__(self, host: str = "http://localhost:11434", timeout: int = 1200, default_model: str = "llama3:8b") -> None:
         """Initialize the Ollama client.
         
         Args:
             host: The host address for the Ollama service.
             timeout: Request timeout in seconds.
+            default_model: Default model to use if none specified in invoke calls.
         """
         self.host = host
         self.timeout = timeout
+        self.default_model = default_model
         self._client = ollama.Client(host=host)
     
-    def invoke(self, prompt: str, model: str = "llama3:8b") -> str:
+    def invoke(self, prompt: str, model: Optional[str] = None) -> str:
         """Send a prompt to the Ollama service and return the response.
         
         This method sends a text prompt to the specified model running on
@@ -71,7 +73,7 @@ class OllamaClient:
         
         Args:
             prompt: The text prompt to send to the model.
-            model: The name of the model to use (default: "llama3:8b").
+            model: The name of the model to use. If None, uses the default_model.
             
         Returns:
             The text response from the model.
@@ -91,6 +93,10 @@ class OllamaClient:
         if not prompt or not prompt.strip():
             raise ValueError("Prompt cannot be empty or None")
         
+        # Use default model if none specified
+        if model is None:
+            model = self.default_model
+            
         # Generate unique request ID for correlation
         request_id = str(uuid.uuid4())[:8]
         timestamp = datetime.now().isoformat()
