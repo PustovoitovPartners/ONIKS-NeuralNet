@@ -259,8 +259,11 @@ class OllamaClient:
         """
         try:
             models = self._client.list()
-            available_models = [m['name'] for m in models.get('models', [])]
-            is_available = any(model in available_model for available_model in available_models)
+            if hasattr(models, 'models'):
+                available_models = [m.name for m in models.models]
+            else:
+                available_models = [m['name'] for m in models.get('models', [])]
+            is_available = model in available_models
             
             logger.info(f"Model '{model}' availability check: {is_available}")
             if not is_available:
@@ -283,7 +286,10 @@ class OllamaClient:
         """
         try:
             response = self._client.list()
-            models = [m['name'] for m in response.get('models', [])]
+            if hasattr(response, 'models'):
+                models = [m.name for m in response.models]
+            else:
+                models = [m['name'] for m in response.get('models', [])]
             logger.info(f"Retrieved {len(models)} available models from Ollama")
             return models
             

@@ -157,11 +157,20 @@ class RouterAgent(BaseAgent):
                 logger.warning(f"[ROUTER-{agent_execution_id}] Timeout before LLM call - elapsed {elapsed_time:.2f}s >= {self.timeout_seconds}s")
                 return result_state
             
-            logger.info(f"[ROUTER-{agent_execution_id}] Calling LLM for fast classification using {self.routing_model}")
+            # Check if routing model is available before using it
+            if self.llm_client.check_model_availability(self.routing_model):
+                logger.info(f"[ROUTER-{agent_execution_id}] Calling LLM for fast classification using {self.routing_model}")
+                model_to_use = self.routing_model
+            else:
+                logger.warning(f"[ROUTER-{agent_execution_id}] Routing model {self.routing_model} not available, using keyword fallback")
+                execution_path = self._keyword_classification_fallback(goal)
+                result_state.data['execution_path'] = execution_path
+                result_state.add_message(f"[ROUTER-FALLBACK] Routing model unavailable - using keyword classification: {execution_path}")
+                return result_state
             
-            # Make fast LLM call for classification using routing model
+            # Make fast LLM call for classification using available routing model
             try:
-                raw_llm_response = self.llm_client.invoke(classification_prompt, model=self.routing_model)
+                raw_llm_response = self.llm_client.invoke(classification_prompt, model=model_to_use)
             except Exception as routing_error:
                 # Fallback to keyword-based classification if routing model fails
                 logger.warning(f"[ROUTER-{agent_execution_id}] Routing model {self.routing_model} failed: {routing_error}")
