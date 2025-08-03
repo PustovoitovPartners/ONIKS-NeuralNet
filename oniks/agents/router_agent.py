@@ -50,7 +50,7 @@ class RouterAgent(BaseAgent):
         llm_client: OllamaClient instance for LLM interactions.
         routing_model: Lightweight model for fast classification (default: "phi3:mini").
         main_model: Main model for complex operations (default: "llama3:8b").
-        timeout_seconds: Maximum time for classification (default: 15 seconds).
+        timeout_seconds: Maximum time for classification (default: 30 seconds).
     
     Example:
         >>> from oniks.llm.client import OllamaClient
@@ -63,7 +63,7 @@ class RouterAgent(BaseAgent):
         direct
     """
     
-    def __init__(self, name: str, llm_client: "OllamaClient", routing_model: str = "phi3:mini", main_model: str = "llama3:8b", timeout_seconds: float = 15.0) -> None:
+    def __init__(self, name: str, llm_client: "OllamaClient", routing_model: str = "phi3:mini", main_model: str = "llama3:8b", timeout_seconds: float = 30.0) -> None:
         """Initialize the RouterAgent with LLM client and dual-circuit configuration.
         
         Args:

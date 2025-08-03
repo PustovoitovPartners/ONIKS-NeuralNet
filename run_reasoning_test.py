@@ -16,7 +16,7 @@ Circuit 2: Deep Planning Circuit (PlannerAgent)
 - Task: Detailed hierarchical planning for complex goals
 
 The demonstration workflow:
-1. RouterAgent uses phi3:mini for ultra-fast classification (15s timeout)
+1. RouterAgent uses phi3:mini for ultra-fast classification (30s timeout)
 2a. DIRECT PATH (simple): RouterAgent → ReasoningAgent (83% faster)
 2b. HIERARCHICAL PATH (complex): RouterAgent → PlannerAgent → ReasoningAgent (maintains quality)
 3. Multi-layer fallback: LLM → keyword-based → hierarchical (100% reliability)
@@ -196,7 +196,7 @@ def cleanup_demo_files() -> None:
 def main() -> None:
     """Main dual-circuit decision-making system demonstration function."""
     print("=== ONIKS Dual-Circuit Decision-Making System Demonstration ===\n")
-    print("🔄 Circuit 1: Fast Response (phi3:mini, 15s timeout)")
+    print("🔄 Circuit 1: Fast Response (phi3:mini, 30s timeout)")
     print("🧠 Circuit 2: Deep Planning (llama3:8b, 20min timeout)")
     print("⚡ Performance Target: 83% faster for simple tasks\n")
     
