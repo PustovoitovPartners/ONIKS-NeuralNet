@@ -259,20 +259,92 @@ class OllamaClient:
         """
         try:
             models = self._client.list()
+            available_models = []
+            
+            # Handle different response formats from Ollama
             if hasattr(models, 'models'):
-                available_models = [m.name for m in models.models]
+                for m in models.models:
+                    # Try multiple methods to extract model name
+                    model_name = None
+                    
+                    # Method 1: Try standard attributes (name, model)
+                    for attr_name in ['name', 'model']:
+                        if hasattr(m, attr_name):
+                            try:
+                                model_name = getattr(m, attr_name)
+                                if model_name:
+                                    break
+                            except:
+                                continue
+                    
+                    # Method 2: If it's a dict-like object
+                    if not model_name and hasattr(m, 'get'):
+                        try:
+                            model_name = m.get('name') or m.get('model')
+                        except:
+                            pass
+                    
+                    # Method 3: If it's a dict (fallback)
+                    if not model_name and isinstance(m, dict):
+                        model_name = m.get('name', m.get('model', ''))
+                    
+                    # Method 4: Try accessing as attribute dynamically
+                    if not model_name:
+                        try:
+                            # Get all attributes and look for name-like ones
+                            obj_dict = getattr(m, '__dict__', {})
+                            for key, value in obj_dict.items():
+                                if key in ['name', 'model', 'id'] and value:
+                                    model_name = value
+                                    break
+                        except:
+                            pass
+                    
+                    # Method 5: String representation as last resort
+                    if not model_name:
+                        try:
+                            str_repr = str(m)
+                            # Only use if it's not just the type representation
+                            if str_repr and not str_repr.startswith('<') and ':' in str_repr:
+                                # Try to extract model name from string representation
+                                if 'name=' in str_repr:
+                                    parts = str_repr.split('name=')
+                                    if len(parts) > 1:
+                                        name_part = parts[1].split(',')[0].split(')')[0].strip('\'"')
+                                        if name_part:
+                                            model_name = name_part
+                        except:
+                            pass
+                    
+                    if model_name and isinstance(model_name, str) and model_name.strip():
+                        available_models.append(model_name.strip())
+                        logger.debug(f"Extracted model name: {model_name}")
+                    else:
+                        # Log for debugging but don't fail
+                        logger.debug(f"Could not extract model name from object: {type(m)}, repr: {repr(m)[:100]}")
             else:
-                available_models = [m['name'] for m in models.get('models', [])]
+                # Fallback for older Ollama versions
+                models_list = getattr(models, 'models', [])
+                if isinstance(models_list, list):
+                    for m in models_list:
+                        if isinstance(m, dict):
+                            name = m.get('name', m.get('model', ''))
+                            if name:
+                                available_models.append(name)
+            
+            # Remove duplicates and empty strings
+            available_models = list(set([m for m in available_models if m and m.strip()]))
             is_available = model in available_models
             
             logger.info(f"Model '{model}' availability check: {is_available}")
-            if not is_available:
-                logger.info(f"Available models: {available_models}")
+            logger.info(f"Available models: {available_models}")
                 
             return is_available
             
         except Exception as e:
             logger.error(f"Error checking model availability: {e}")
+            import traceback
+            logger.error(f"Full traceback: {traceback.format_exc()}")
             return False
     
     def list_available_models(self) -> list[str]:
@@ -286,10 +358,61 @@ class OllamaClient:
         """
         try:
             response = self._client.list()
+            models = []
+            
+            # Handle different response formats from Ollama
             if hasattr(response, 'models'):
-                models = [m.name for m in response.models]
+                for m in response.models:
+                    # Try multiple methods to extract model name (same as check_model_availability)
+                    model_name = None
+                    
+                    # Method 1: Try standard attributes (name, model)
+                    for attr_name in ['name', 'model']:
+                        if hasattr(m, attr_name):
+                            try:
+                                model_name = getattr(m, attr_name)
+                                if model_name:
+                                    break
+                            except:
+                                continue
+                    
+                    # Method 2: If it's a dict-like object
+                    if not model_name and hasattr(m, 'get'):
+                        try:
+                            model_name = m.get('name') or m.get('model')
+                        except:
+                            pass
+                    
+                    # Method 3: If it's a dict (fallback)
+                    if not model_name and isinstance(m, dict):
+                        model_name = m.get('name', m.get('model', ''))
+                    
+                    # Method 4: Try accessing as attribute dynamically
+                    if not model_name:
+                        try:
+                            # Get all attributes and look for name-like ones
+                            obj_dict = getattr(m, '__dict__', {})
+                            for key, value in obj_dict.items():
+                                if key in ['name', 'model', 'id'] and value:
+                                    model_name = value
+                                    break
+                        except:
+                            pass
+                    
+                    if model_name and isinstance(model_name, str) and model_name.strip():
+                        models.append(model_name.strip())
             else:
-                models = [m['name'] for m in response.get('models', [])]
+                # Fallback for older Ollama versions
+                models_list = getattr(response, 'models', [])
+                if isinstance(models_list, list):
+                    for m in models_list:
+                        if isinstance(m, dict):
+                            name = m.get('name', m.get('model', ''))
+                            if name:
+                                models.append(name)
+            
+            # Remove duplicates and empty strings
+            models = list(set([m for m in models if m and m.strip()]))
             logger.info(f"Retrieved {len(models)} available models from Ollama")
             return models
             
