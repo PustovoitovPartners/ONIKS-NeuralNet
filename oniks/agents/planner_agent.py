@@ -180,8 +180,17 @@ class PlannerAgent(BaseAgent):
         logger.info(f"[PLANNER-{agent_execution_id}] Available tools: {[tool.name for tool in self.available_tools]}")
         logger.info(f"[PLANNER-{agent_execution_id}] NO FALLBACKS - LLM must succeed or operation fails")
         
-        # Generate structured prompt for task decomposition
-        decomposition_prompt = self._generate_decomposition_prompt(goal)
+        # Check execution path to determine prompt type
+        execution_path = result_state.data.get('execution_path', 'hierarchical')
+        
+        # Generate appropriate prompt based on execution path
+        if execution_path == 'direct':
+            decomposition_prompt = self._generate_optimized_prompt(goal)
+            result_state.add_message("Using optimized prompt for simple task (direct path)")
+        else:
+            decomposition_prompt = self._generate_decomposition_prompt(goal)
+            result_state.add_message("Using comprehensive prompt for complex task (hierarchical path)")
+        
         result_state.data['decomposition_prompt'] = decomposition_prompt
         
         result_state.add_message("Generated task decomposition prompt for LLM")
@@ -472,6 +481,84 @@ CORRECT sequence (MANDATORY):
 CRITICAL REMINDER: You MUST create intermediate states. You CANNOT optimize. Follow the sequence exactly.
 
 Create your MANDATORY sequential tool calls to achieve the goal:"""
+
+        return prompt
+    
+    def _generate_optimized_prompt(self, goal: str) -> str:
+        """Generate a lightweight prompt for simple tasks without strict sequential rules.
+        
+        Creates a simplified prompt that allows direct optimization for simple tasks,
+        removing the strict sequential requirements that are only necessary for
+        complex multi-step workflows.
+        
+        Args:
+            goal: The simple goal to decompose.
+            
+        Returns:
+            Formatted prompt string for optimized simple task decomposition.
+        """
+        # Build the available tools section
+        tools_section = "--- AVAILABLE TOOLS ---\n"
+        
+        if not self.available_tools:
+            tools_section += "No tools available.\n"
+        else:
+            for tool in self.available_tools:
+                description = getattr(tool, 'description', None) or "[Description not provided]"
+                tools_section += f"- {tool.name}: {description}\n"
+        
+        prompt = f"""--- SIMPLE TASK OPTIMIZATION ---
+
+GOAL TO ACHIEVE:
+{goal}
+
+{tools_section}
+--- OPTIMIZATION INSTRUCTIONS ---
+
+This is a SIMPLE TASK that can be completed efficiently. You are allowed to:
+- Use direct approaches to achieve the goal
+- Combine related operations where appropriate
+- Focus on the most efficient path to completion
+- Skip unnecessary intermediate states for simple operations
+
+GUIDELINES:
+- Create the final desired content directly when possible
+- Use the minimum number of steps needed
+- Prioritize efficiency and directness
+- Only use verification steps if explicitly requested
+
+--- EXECUTION RULES ---
+
+RULE 1: DIRECT CONTENT CREATION ALLOWED
+- For simple file creation, write the final content directly
+- No need for initial content + modification unless specifically required
+- Aim for the shortest path to the goal
+
+RULE 2: PYTHON EXECUTION MUST USE VIRTUAL ENVIRONMENT
+- ALL Python commands MUST use virtual environment activation
+- Format: execute_bash_command(command='python3 script.py')
+- NEVER execute Python directly without venv activation
+
+--- OUTPUT FORMAT ---
+Provide the tool call sequence as a numbered list:
+1. tool_name(parameters_for_direct_completion)
+2. additional_tool(parameters_if_needed)
+
+--- OPTIMIZED EXAMPLES ---
+
+EFFICIENT Example - Direct Content Creation:
+Goal: Create hello_world.py that prints "Hello World" and execute it
+OPTIMIZED sequence:
+1. write_file(file_path='hello_world.py', content='print("Hello World")')  # Direct final content
+2. execute_bash_command(command='python3 hello_world.py')  # Execute directly
+
+EFFICIENT Example - Simple File Operation:
+Goal: Create config.json with port 8080 and host localhost
+OPTIMIZED sequence:
+1. write_file(file_path='config.json', content='{{"port": 8080, "host": "localhost"}}')  # Direct final content
+
+--- YOUR OPTIMIZED TOOL SEQUENCE ---
+Create your EFFICIENT tool calls to achieve the goal directly:"""
 
         return prompt
     

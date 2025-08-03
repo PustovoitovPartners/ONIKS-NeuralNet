@@ -108,7 +108,15 @@ class ReasoningAgent(BaseAgent):
         # Add message about reasoning execution
         result_state.add_message(f"Reasoning agent {self.name} starting analysis of current subtask")
         
-        # Extract the current subtask from plan[0]
+        # Check execution path - handle direct path differently
+        execution_path = result_state.data.get('execution_path', 'hierarchical')
+        
+        if execution_path == 'direct':
+            # For direct path, parse goal directly without requiring a hierarchical plan
+            result_state.add_message("Direct execution path detected - parsing goal directly")
+            return self._handle_direct_execution(result_state)
+        
+        # Extract the current subtask from plan[0] for hierarchical path
         plan = result_state.data.get('plan', [])
         
         if not plan or not isinstance(plan, list):
@@ -194,6 +202,153 @@ class ReasoningAgent(BaseAgent):
         result_state.add_message(f"Reasoning agent {self.name} completed analysis")
         
         return result_state
+    
+    def _handle_direct_execution(self, state: "State") -> "State":
+        """Handle direct execution path for simple tasks.
+        
+        For simple tasks routed through the direct path, this method parses
+        the goal directly and attempts to extract tool and arguments without
+        requiring a hierarchical plan structure.
+        
+        Args:
+            state: The current state containing the goal to execute directly.
+            
+        Returns:
+            The modified state with tool selection for direct execution.
+        """
+        # Create a copy of the state to avoid modifying the original
+        result_state = state.model_copy(deep=True)
+        
+        # Extract the goal for direct execution
+        goal = result_state.data.get('goal', '').strip()
+        
+        if not goal:
+            result_state.add_message("No goal found for direct execution")
+            result_state.data['next_tool'] = 'task_complete'
+            result_state.data['tool_args'] = {}
+            return result_state
+        
+        result_state.add_message(f"Direct execution for goal: {goal}")
+        
+        # Generate unique agent execution ID for correlation
+        agent_execution_id = str(uuid.uuid4())[:8]
+        timestamp = datetime.now().isoformat()
+        
+        # Log direct execution
+        logger.info(f"[REASONING-DIRECT-{agent_execution_id}] Starting direct execution at {timestamp}")
+        logger.info(f"[REASONING-DIRECT-{agent_execution_id}] Goal: {goal}")
+        
+        # Generate simplified prompt for direct goal analysis
+        generated_prompt = self._generate_direct_goal_prompt(goal)
+        result_state.data['last_prompt'] = generated_prompt
+        
+        logger.info(f"[REASONING-DIRECT-{agent_execution_id}] Generated direct execution prompt")
+        result_state.add_message(f"[LLM-POWERED] Generated direct execution prompt (execution: {agent_execution_id})")
+        
+        # Invoke LLM for direct goal analysis
+        try:
+            logger.info(f"[REASONING-DIRECT-{agent_execution_id}] Calling LLM for direct goal analysis")
+            raw_llm_response = self.llm_client.invoke(generated_prompt)
+            result_state.data['llm_response'] = raw_llm_response
+            
+            # Log successful LLM response
+            success_timestamp = datetime.now().isoformat()
+            logger.info(f"[REASONING-DIRECT-{agent_execution_id}] LLM direct reasoning completed at {success_timestamp}")
+            result_state.add_message(f"[LLM-POWERED] Successfully received direct execution response (execution: {agent_execution_id})")
+            
+            # Sanitize and parse the LLM response
+            sanitized_response = self._sanitize_llm_response(raw_llm_response)
+            result_state.add_message(f"[LLM-POWERED] Applied sanitization to direct execution response")
+            
+            # Parse the sanitized LLM response to extract tool and arguments
+            self._parse_llm_response(sanitized_response, result_state)
+            
+            logger.info(f"[REASONING-DIRECT-{agent_execution_id}] Direct execution reasoning completed successfully")
+            logger.info(f"[REASONING-DIRECT-{agent_execution_id}] Selected tool: {result_state.data.get('next_tool', 'None')}")
+            logger.info(f"[REASONING-DIRECT-{agent_execution_id}] Tool arguments: {result_state.data.get('tool_args', {})}")
+            
+        except Exception as e:
+            # Log error and fall back to basic reasoning
+            error_timestamp = datetime.now().isoformat()
+            logger.error(f"[REASONING-DIRECT-{agent_execution_id}] Direct execution failed at {error_timestamp}")
+            logger.error(f"[REASONING-DIRECT-{agent_execution_id}] Error type: {type(e).__name__}")
+            logger.error(f"[REASONING-DIRECT-{agent_execution_id}] Error message: {str(e)}")
+            
+            result_state.add_message(f"[ERROR] Direct execution LLM failed: {str(e)} (execution: {agent_execution_id})")
+            result_state.add_message(f"[FALLBACK-REASONING] Falling back to hardcoded reasoning for direct execution")
+            
+            # Fall back to basic reasoning for direct execution
+            logger.warning(f"[REASONING-DIRECT-{agent_execution_id}] Switching to fallback reasoning for direct execution")
+            self._perform_basic_reasoning(goal, result_state)
+        
+        result_state.add_message(f"Direct execution reasoning completed")
+        
+        return result_state
+    
+    def _generate_direct_goal_prompt(self, goal: str) -> str:
+        """Generate a prompt for direct goal analysis.
+        
+        Creates a focused prompt for analyzing simple goals directly without
+        the complexity of hierarchical planning structures.
+        
+        Args:
+            goal: The simple goal to analyze directly.
+            
+        Returns:
+            Formatted prompt string for direct goal analysis.
+        """
+        # Build the tools list section
+        tools_section = "--- AVAILABLE TOOLS ---\n"
+        
+        if not self.tools:
+            tools_section += "No tools available.\n"
+        else:
+            for tool in self.tools:
+                description = getattr(tool, 'description', None) or "[Description not provided]"
+                tools_section += f"- {tool.name}: {description}\n"
+        
+        # Build direct analysis examples
+        examples_section = """--- DIRECT EXECUTION EXAMPLES ---
+
+Example 1:
+Goal: Create a file named 'hello.txt' with the content 'Hello World'
+Tool: write_file
+Arguments: {"file_path": "hello.txt", "content": "Hello World"}
+
+Example 2:
+Goal: Execute the command 'ls -la' to list files
+Tool: execute_bash_command
+Arguments: {"command": "ls -la"}
+
+Example 3:
+Goal: Read the contents of file 'data.txt'
+Tool: read_file
+Arguments: {"file_path": "data.txt"}
+
+--- FORMATTING RULES ---
+- Tool name must be on a line starting with "Tool:"
+- Arguments must be on a line starting with "Arguments:" with valid JSON
+- Use double quotes in JSON, not single quotes
+- JSON must be properly formatted"""
+        
+        # Construct the direct analysis prompt
+        prompt = f"""--- DIRECT GOAL ANALYSIS ---
+
+--- GOAL TO ACHIEVE ---
+{goal}
+
+{tools_section}
+
+{examples_section}
+
+--- QUESTION ---
+What tool should be used and with what arguments to achieve this goal directly?
+
+--- INSTRUCTION ---
+Analyze the goal and select the most appropriate tool with correct arguments.
+This is a simple goal that can be achieved with a single tool operation."""
+        
+        return prompt
     
     def _generate_task_prompt(self, current_task: str) -> str:
         """Generate a simplified prompt for tool selection based on atomic subtask.

@@ -7,9 +7,11 @@ decision-making, and tool coordination during graph execution.
 from oniks.agents.base import BaseAgent
 from oniks.agents.reasoning_agent import ReasoningAgent
 from oniks.agents.planner_agent import PlannerAgent
+from oniks.agents.router_agent import RouterAgent
 
 __all__ = [
     "BaseAgent",
     "ReasoningAgent",
     "PlannerAgent",
+    "RouterAgent",
 ]
