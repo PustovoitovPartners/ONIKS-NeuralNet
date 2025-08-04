@@ -51,6 +51,7 @@ docs = [
 ]
 
 [project.scripts]
+oniks = "oniks.cli:main"
 oniks-demo = "oniks.cli:run_demo"
 
 [project.urls]

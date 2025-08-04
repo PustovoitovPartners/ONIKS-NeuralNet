@@ -99,18 +99,37 @@ This cycle continues until all tasks in the plan are completed, with built-in er
    ollama pull llama3:8b
    ```
 
-### Running the Demo
+### 🚀 Quick Start - Interactive CLI (Recommended)
 
-Execute the comprehensive demonstration script:
+The easiest way to use ONIKS is through the user-friendly interactive CLI:
+
+```bash
+python3 run_cli.py
+```
+
+This launches a clean, intuitive interface where you can:
+- ✅ **Give ONIKS natural language goals** (e.g., "Create a Python calculator script")
+- ✅ **Track progress in real-time** with visual progress bars
+- ✅ **See clear results** without technical complexity  
+- ✅ **Handle multiple tasks** in one session
+
+### 📋 Alternative: Command Line Interface
+
+```bash
+# Interactive mode (default)
+python3 -m oniks.cli run
+
+# Demo mode (technical demonstration)  
+python3 -m oniks.cli demo
+```
+
+### 🔧 Advanced: Technical Demo
+
+For developers who want to see the internal workings:
 
 ```bash
 python run_reasoning_test.py
 ```
-
-This demo showcases the complete ONIKS workflow:
-- **Goal**: "Create a directory named 'output', and inside it, create a file 'log.txt' with the text 'System test OK'"
-- **Process**: PlannerAgent decomposes this into atomic tasks, ReasoningAgent executes each step
-- **Verification**: Built-in checks ensure successful completion
 
 ### Example Output
 

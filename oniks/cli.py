@@ -38,6 +38,18 @@ def run_demo():
         return 1
 
 
+def run_interactive():
+    """Run the interactive ONIKS CLI."""
+    try:
+        from .ui.cli import UserFriendlyCLI
+        cli = UserFriendlyCLI()
+        cli.run()
+        return 0
+    except Exception as e:
+        print(f"Error running interactive CLI: {e}")
+        return 1
+
+
 def main():
     """Main CLI entry point."""
     parser = argparse.ArgumentParser(
@@ -46,6 +58,12 @@ def main():
     )
     
     subparsers = parser.add_subparsers(dest="command", help="Available commands")
+    
+    # Interactive command (default)
+    interactive_parser = subparsers.add_parser(
+        "run", 
+        help="Run ONIKS interactive CLI (default)"
+    )
     
     # Demo command
     demo_parser = subparsers.add_parser(
@@ -57,6 +75,8 @@ def main():
     
     if args.command == "demo":
         return run_demo()
+    elif args.command == "run" or args.command is None:
+        return run_interactive()
     else:
         parser.print_help()
         return 0
