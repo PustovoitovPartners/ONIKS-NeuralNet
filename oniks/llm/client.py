@@ -253,7 +253,7 @@ class OllamaClient:
         """
         try:
             models = self._client.list()
-            available_models = [m.name for m in models.models]
+            available_models = [m.model for m in models.models]
             is_available = any(model in available_model for available_model in available_models)
             
             logger.info(f"Model '{model}' availability check: {is_available}")
@@ -277,7 +277,7 @@ class OllamaClient:
         """
         try:
             response = self._client.list()
-            models = [m.name for m in response.models]
+            models = [m.model for m in response.models]
             logger.info(f"Retrieved {len(models)} available models from Ollama")
             return models
             

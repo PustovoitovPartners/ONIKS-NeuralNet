@@ -130,9 +130,9 @@ class TestOllamaClient:
         
         # Create mock objects that simulate the actual ollama.ListResponse structure
         mock_model1 = Mock()
-        mock_model1.name = 'llama3:8b:latest'
+        mock_model1.model = 'llama3:8b:latest'
         mock_model2 = Mock()
-        mock_model2.name = 'llama2:latest'
+        mock_model2.model = 'llama2:latest'
         
         mock_response = Mock()
         mock_response.models = [mock_model1, mock_model2]
@@ -164,11 +164,11 @@ class TestOllamaClient:
         
         # Create mock objects that simulate the actual ollama.ListResponse structure
         mock_model1 = Mock()
-        mock_model1.name = 'llama3:8b:latest'
+        mock_model1.model = 'llama3:8b:latest'
         mock_model2 = Mock()
-        mock_model2.name = 'llama2:latest'
+        mock_model2.model = 'llama2:latest'
         mock_model3 = Mock()
-        mock_model3.name = 'codellama:latest'
+        mock_model3.model = 'codellama:latest'
         
         mock_response = Mock()
         mock_response.models = [mock_model1, mock_model2, mock_model3]
