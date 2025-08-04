@@ -99,10 +99,23 @@ This cycle continues until all tasks in the plan are completed, with built-in er
    ollama pull llama3:8b
    ```
 
-### 🚀 Quick Start - Interactive CLI (Recommended)
+### 🚀 Quick Start Options
 
-The easiest way to use ONIKS is through the user-friendly interactive CLI:
+#### 📱 **Google Colab (Easiest)**
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/your-username/ONIKS_NeuralNet/blob/main/ONIKS_Colab_Demo.ipynb)
 
+```python
+# In Google Colab
+from oniks.ui.colab import run_task, create_task_interface
+
+# Simple usage
+result = run_task("Create a Python script that prints hello world")
+
+# Or use interactive widgets
+create_task_interface()
+```
+
+#### 💻 **Local Interactive CLI**
 ```bash
 python3 run_cli.py
 ```

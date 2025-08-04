@@ -11,6 +11,7 @@ from typing import List, Optional
 from pathlib import Path
 
 from .runner import TaskExecutor
+from .colab import is_colab_environment, is_jupyter_environment
 
 
 class Colors:
@@ -126,6 +127,17 @@ class UserFriendlyCLI:
     
     def get_user_goal(self) -> Optional[str]:
         """Get goal from user with friendly prompts."""
+        # Check if we're in Colab/Jupyter environment
+        if is_colab_environment() or is_jupyter_environment():
+            self.print_status("⚠️  Interactive input not available in notebook environment", "warning")
+            print(f"{Colors.CYAN}Use the Colab interface instead:{Colors.END}")
+            print("  from oniks.ui.colab import run_task")
+            print("  result = run_task('your goal here')")
+            print("\nOr use the widget interface:")
+            print("  from oniks.ui.colab import create_task_interface")
+            print("  create_task_interface()")
+            return None
+        
         print(f"\n{Colors.BOLD}What would you like ONIKS to do?{Colors.END}")
         print(f"{Colors.CYAN}Examples:{Colors.END}")
         print("  • Create a Python script that calculates fibonacci numbers")
