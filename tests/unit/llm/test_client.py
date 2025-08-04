@@ -128,12 +128,14 @@ class TestOllamaClient:
         mock_client_instance = Mock()
         mock_ollama_client_class.return_value = mock_client_instance
         
-        mock_response = {
-            'models': [
-                {'name': 'llama3:8b:latest'},
-                {'name': 'llama2:latest'},
-            ]
-        }
+        # Create mock objects that simulate the actual ollama.ListResponse structure
+        mock_model1 = Mock()
+        mock_model1.name = 'llama3:8b:latest'
+        mock_model2 = Mock()
+        mock_model2.name = 'llama2:latest'
+        
+        mock_response = Mock()
+        mock_response.models = [mock_model1, mock_model2]
         mock_client_instance.list.return_value = mock_response
         
         client = OllamaClient()
@@ -160,13 +162,16 @@ class TestOllamaClient:
         mock_client_instance = Mock()
         mock_ollama_client_class.return_value = mock_client_instance
         
-        mock_response = {
-            'models': [
-                {'name': 'llama3:8b:latest'},
-                {'name': 'llama2:latest'},
-                {'name': 'codellama:latest'},
-            ]
-        }
+        # Create mock objects that simulate the actual ollama.ListResponse structure
+        mock_model1 = Mock()
+        mock_model1.name = 'llama3:8b:latest'
+        mock_model2 = Mock()
+        mock_model2.name = 'llama2:latest'
+        mock_model3 = Mock()
+        mock_model3.name = 'codellama:latest'
+        
+        mock_response = Mock()
+        mock_response.models = [mock_model1, mock_model2, mock_model3]
         mock_client_instance.list.return_value = mock_response
         
         client = OllamaClient()
